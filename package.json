@@ -1,0 +1,25 @@
+{
+  "name": "typebot-client-whatsapp",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "dependencies": {
+    "@prisma/client": "^6.8.2",
+    "@whiskeysockets/baileys": "^6.7.17",
+    "axios": "^1.9.0",
+    "dotenv": "^16.5.0",
+    "prisma": "^6.8.2",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node --enable-source-maps dist/index.js",
+    "build": "tsc"
+  }
+}
