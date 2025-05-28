@@ -178,8 +178,59 @@ async function start() {
       data: { waId, content: reply, direction: "out", sessionId },
     });
 
-    // Send reply to WhatsApp
-    await sock.sendMessage(waId, { text: reply });
+    // Process and send all Typebot messages (text, video, etc)
+    if (Array.isArray(typebotResponse.messages) && typebotResponse.messages.length > 0) {
+      for (const message of typebotResponse.messages) {
+        if (message.type === "text") {
+          const reply =
+            message.content?.richText?.[0]?.children?.[0]?.text ||
+            message.content?.text ||
+            message.content?.html ||
+            message.content ||
+            "...";
+          console.log("Sending text:", reply);
+          await prisma.message.create({
+            data: { waId, content: reply, direction: "out", sessionId },
+          });
+          await sock.sendMessage(waId, { text: reply });
+        } else if (message.type === "video") {
+          const videoUrl = message.content?.url;
+          if (videoUrl) {
+            // Check if it's a direct video file (e.g., ends with .mp4)
+            if (/\.(mp4|mov|webm|avi|mkv)(\?.*)?$/i.test(videoUrl)) {
+              console.log("Sending video file:", videoUrl);
+              await prisma.message.create({
+                data: {
+                  waId,
+                  content: `[Video: ${videoUrl}]`,
+                  direction: "out",
+                  sessionId,
+                },
+              });
+              await sock.sendMessage(waId, { video: { url: videoUrl } });
+            } else {
+              // Not a direct video file, send as a link instead
+              console.log(
+                "Video URL is not a direct file, sending as text link:",
+                videoUrl
+              );
+              await prisma.message.create({
+                data: {
+                  waId,
+                  content: `[Video link: ${videoUrl}]`,
+                  direction: "out",
+                  sessionId,
+                },
+              });
+              await sock.sendMessage(waId, { text: `Video: ${videoUrl}` });
+            }
+          } else {
+            console.log("Video message found but no URL:", message);
+          }
+        }
+        // You can add more handlers for other types (image, audio, etc) here if needed
+      }
+    }
   });
 }
 
