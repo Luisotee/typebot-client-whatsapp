@@ -1,237 +1,186 @@
-import makeWASocket, {
-  useMultiFileAuthState,
-  DisconnectReason,
-} from "@whiskeysockets/baileys";
 import { PrismaClient } from "@prisma/client";
-import qrcode from "qrcode-terminal";
-
-// Load environment variables
 import "dotenv/config";
+import express from "express";
+import pino from "pino";
+import {
+  DONE_REACTION,
+  ERROR_REACTION,
+  QUEUED_REACTION,
+  TYPEBOT_API_KEY,
+  TYPEBOT_API_URL,
+  TYPEBOT_SESSION_URL,
+  VERIFY_TOKEN,
+  WORKING_REACTION,
+} from "./config";
+import { sendWhatsappReaction, sendWhatsappText, sendWhatsappVideo } from "./whatsappApi";
+
+const logger = pino({ level: process.env.LOG_LEVEL || "info" });
 
 const prisma = new PrismaClient();
+const app = express();
+app.use(express.json());
 
-const TYPEBOT_ID = process.env.TYPEBOT_ID!;
-const TYPEBOT_API_KEY = process.env.TYPEBOT_API_KEY!;
-const TYPEBOT_API_BASE =
-  process.env.TYPEBOT_API_BASE || "https://bot.luisotee.com/api/v1";
-const TYPEBOT_API_URL = `${TYPEBOT_API_BASE}/typebots/${TYPEBOT_ID}/preview/startChat`;
-const TYPEBOT_SESSION_URL = `${TYPEBOT_API_BASE}/preview/sessions`;
+// Webhook verification
+app.get("/webhook", (req, res) => {
+  logger.info({ query: req.query }, "Received webhook verification request");
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    logger.info("Webhook verified successfully");
+    res.status(200).send(challenge);
+  } else {
+    logger.warn("Webhook verification failed");
+    res.sendStatus(403);
+  }
+});
 
-async function start() {
-  const { state, saveCreds } = await useMultiFileAuthState("auth_info");
-  const sock = makeWASocket({
-    auth: state,
-    // Remove the deprecated printQRInTerminal option
-  });
-
-  sock.ev.on("creds.update", saveCreds);
-
-  sock.ev.on("connection.update", (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
-      console.log("QR Code received, scan it with your phone!");
-      qrcode.generate(qr, { small: true });
-    }
-
-    if (connection === "close") {
-      // Fix: lastDisconnect does not have 'reason', so check error or always reconnect unless error is fatal
-      const isLoggedOut =
-        (lastDisconnect?.error as any)?.output?.statusCode === DisconnectReason.loggedOut;
-      const shouldReconnect = !isLoggedOut;
-      console.log(
-        "Connection closed due to ",
-        lastDisconnect?.error,
-        ", reconnecting ",
-        shouldReconnect
-      );
-      if (shouldReconnect) {
-        start();
-      }
-    } else if (connection === "open") {
-      console.log("Opened connection");
-    }
-  });
-
-  sock.ev.on("messages.upsert", async ({ messages }) => {
+// Webhook for incoming messages
+app.post("/webhook", async (req, res) => {
+  const entry = req.body.entry?.[0];
+  const changes = entry?.changes?.[0];
+  const messages = changes?.value?.messages;
+  if (messages && messages.length > 0) {
     const msg = messages[0];
-    if (!msg.message?.conversation) return;
+    const waId = msg.from;
+    const text = msg.text?.body;
+    const messageId = msg.id;
+    logger.info({ waId, text }, "Incoming WhatsApp message");
 
-    const waId = msg.key.remoteJid!;
-    const text = msg.message.conversation;
+    if (messageId) await sendWhatsappReaction(waId, messageId, QUEUED_REACTION);
 
-    // Log incoming message
-    await prisma.message.create({
-      data: { waId, content: text, direction: "in" },
-    });
+    try {
+      if (messageId) await sendWhatsappReaction(waId, messageId, WORKING_REACTION);
 
-    // Find last sessionId
-    let sessionId: string | null = null;
-    const lastMsg = await prisma.message.findFirst({
-      where: { waId, sessionId: { not: null } },
-      orderBy: { timestamp: "desc" },
-    });
+      if (text) {
+        await prisma.message.create({ data: { waId, content: text, direction: "in" } });
 
-    let needNewSession = false;
-    if (lastMsg) {
-      sessionId = lastMsg.sessionId;
-      // Try to continue session
-      const continueRes = await fetch(
-        `${TYPEBOT_SESSION_URL}/${sessionId}/continueChat`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${TYPEBOT_API_KEY}`,
-          },
-          body: JSON.stringify({
-            message: {
-              type: "text",
-              text: text,
-            },
-            textBubbleContentFormat: "richText",
-          }),
-        }
-      );
-      const continueData = await continueRes.json();
-      console.log("Typebot continueChat response:", continueData);
+        // --- Typebot session logic ---
+        // Always get the latest sessionId for this waId
+        let sessionId: string | null = null;
+        const lastMsg = await prisma.message.findFirst({
+          where: { waId, sessionId: { not: null } },
+          orderBy: { timestamp: "desc" },
+        });
 
-      if (continueRes.status === 404 || continueData.code === "NOT_FOUND") {
-        needNewSession = true;
-      }
-    } else {
-      needNewSession = true;
-    }
+        let typebotResponse: any;
+        let needNewSession = false;
 
-    let typebotResponse: any;
-
-    if (needNewSession) {
-      // Start new session
-      const res = await fetch(TYPEBOT_API_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${TYPEBOT_API_KEY}`,
-        },
-        body: JSON.stringify({
-          message: {
-            type: "text",
-            text: text,
-          },
-          textBubbleContentFormat: "richText",
-        }),
-      });
-      typebotResponse = await res.json();
-      console.log("Typebot startChat response:", typebotResponse);
-      sessionId = typebotResponse.sessionId;
-    } else {
-      // Continue session
-      const continueRes = await fetch(
-        `${TYPEBOT_SESSION_URL}/${sessionId}/continueChat`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${TYPEBOT_API_KEY}`,
-          },
-          body: JSON.stringify({
-            message: {
-              type: "text",
-              text: text,
-            },
-            textBubbleContentFormat: "richText",
-          }),
-        }
-      );
-      typebotResponse = await continueRes.json();
-      console.log("Typebot continueChat response:", typebotResponse);
-    }
-
-    // Save sessionId for this message
-    await prisma.message.updateMany({
-      where: { waId, content: text, direction: "in", sessionId: null },
-      data: { sessionId },
-    });
-
-    // Extract the latest message from the messages array
-    let reply = "...";
-    if (Array.isArray(typebotResponse.messages) && typebotResponse.messages.length > 0) {
-      // Find the last message with type 'text'
-      const lastTextMsg = [...typebotResponse.messages]
-        .reverse()
-        .find((m: any) => m.type === "text");
-
-      // Try different possible content structures
-      reply =
-        lastTextMsg?.content?.richText?.[0]?.children?.[0]?.text ||
-        lastTextMsg?.content?.text ||
-        lastTextMsg?.content?.html ||
-        lastTextMsg?.content ||
-        "...";
-
-      console.log("Extracted reply:", reply);
-      console.log("Full text message object:", JSON.stringify(lastTextMsg, null, 2));
-    }
-
-    // Log outgoing message
-    await prisma.message.create({
-      data: { waId, content: reply, direction: "out", sessionId },
-    });
-
-    // Process and send all Typebot messages (text, video, etc)
-    if (Array.isArray(typebotResponse.messages) && typebotResponse.messages.length > 0) {
-      for (const message of typebotResponse.messages) {
-        if (message.type === "text") {
-          const reply =
-            message.content?.richText?.[0]?.children?.[0]?.text ||
-            message.content?.text ||
-            message.content?.html ||
-            message.content ||
-            "...";
-          console.log("Sending text:", reply);
-          await prisma.message.create({
-            data: { waId, content: reply, direction: "out", sessionId },
-          });
-          await sock.sendMessage(waId, { text: reply });
-        } else if (message.type === "video") {
-          const videoUrl = message.content?.url;
-          if (videoUrl) {
-            // Check if it's a direct video file (e.g., ends with .mp4)
-            if (/\.(mp4|mov|webm|avi|mkv)(\?.*)?$/i.test(videoUrl)) {
-              console.log("Sending video file:", videoUrl);
-              await prisma.message.create({
-                data: {
-                  waId,
-                  content: `[Video: ${videoUrl}]`,
-                  direction: "out",
-                  sessionId,
-                },
-              });
-              await sock.sendMessage(waId, { video: { url: videoUrl } });
-            } else {
-              // Not a direct video file, send as a link instead
-              console.log(
-                "Video URL is not a direct file, sending as text link:",
-                videoUrl
-              );
-              await prisma.message.create({
-                data: {
-                  waId,
-                  content: `[Video link: ${videoUrl}]`,
-                  direction: "out",
-                  sessionId,
-                },
-              });
-              await sock.sendMessage(waId, { text: `Video: ${videoUrl}` });
+        if (lastMsg && lastMsg.sessionId) {
+          sessionId = lastMsg.sessionId;
+          logger.info({ waId, sessionId }, "Continuing existing Typebot session");
+          const continueRes = await fetch(
+            `${TYPEBOT_SESSION_URL}/${sessionId}/continueChat`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${TYPEBOT_API_KEY}`,
+              },
+              body: JSON.stringify({ message: text }),
             }
-          } else {
-            console.log("Video message found but no URL:", message);
+          );
+          typebotResponse = await continueRes.json();
+          if (continueRes.status === 404 || typebotResponse.code === "NOT_FOUND") {
+            logger.info({ waId, sessionId }, "Typebot session not found, starting new");
+            needNewSession = true;
+          }
+        } else {
+          logger.info({ waId }, "No previous session, starting new Typebot session");
+          needNewSession = true;
+        }
+
+        if (needNewSession) {
+          const res = await fetch(TYPEBOT_API_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${TYPEBOT_API_KEY}`,
+            },
+            body: JSON.stringify({ message: text }),
+          });
+          typebotResponse = await res.json();
+          sessionId = typebotResponse.sessionId;
+          logger.info({ waId, sessionId }, "Started new Typebot session");
+        }
+
+        // Always update the latest incoming message with the new sessionId
+        await prisma.message.updateMany({
+          where: { waId, content: text, direction: "in", sessionId: null },
+          data: { sessionId },
+        });
+
+        logger.info({ typebotResponse }, "Full Typebot response");
+
+        if (
+          Array.isArray(typebotResponse.messages) &&
+          typebotResponse.messages.length > 0
+        ) {
+          logger.info(
+            { typebotMessages: typebotResponse.messages },
+            "Typebot messages array"
+          );
+          for (const message of typebotResponse.messages) {
+            if (message.type === "text") {
+              let reply = "";
+              if (message.content?.richText) {
+                reply = message.content.richText.map(extractTextFromRichText).join("");
+              } else if (message.content?.text) {
+                reply = message.content.text;
+              } else if (message.content?.plainText) {
+                reply = message.content.plainText;
+              } else if (message.content?.html) {
+                reply = message.content.html;
+              } else if (typeof message.content === "string") {
+                reply = message.content;
+              } else {
+                reply = JSON.stringify(message.content);
+              }
+              logger.info({ waId, reply, message }, "Sending WhatsApp text reply");
+              await prisma.message.create({
+                data: { waId, content: reply, direction: "out", sessionId },
+              });
+              await sendWhatsappText(waId, reply);
+            } else if (message.type === "video") {
+              const videoUrl = message.content?.url;
+              if (videoUrl) {
+                logger.info({ waId, videoUrl }, "Sending WhatsApp video");
+                await prisma.message.create({
+                  data: {
+                    waId,
+                    content: `[Video: ${videoUrl}]`,
+                    direction: "out",
+                    sessionId,
+                  },
+                });
+                await sendWhatsappVideo(waId, videoUrl);
+              }
+            }
           }
         }
-        // You can add more handlers for other types (image, audio, etc) here if needed
       }
+
+      if (messageId) await sendWhatsappReaction(waId, messageId, DONE_REACTION);
+    } catch (error) {
+      logger.error({ error }, "Error processing WhatsApp message");
+      if (messageId) await sendWhatsappReaction(waId, messageId, ERROR_REACTION);
     }
-  });
+  }
+  res.sendStatus(200);
+});
+
+// Helper to recursively extract all text from richText nodes
+function extractTextFromRichText(node: any): string {
+  if (!node) return "";
+  if (typeof node.text === "string") return node.text;
+  if (Array.isArray(node.children)) {
+    return node.children.map(extractTextFromRichText).join("");
+  }
+  return "";
 }
 
-start();
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  logger.info(`Server running on port ${PORT}`);
+});
