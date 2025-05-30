@@ -25,6 +25,53 @@ async function sendWhatsappVideo(to: string, videoUrl: string, caption?: string)
   });
 }
 
+async function sendWhatsappButtons(
+  to: string,
+  bodyText: string,
+  buttons: Array<{ id: string; title: string }>
+) {
+  return sendWhatsappMessage({
+    to,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text: bodyText },
+      action: {
+        buttons: buttons.map((btn, index) => ({
+          type: "reply",
+          reply: {
+            id: btn.id,
+            title: btn.title.substring(0, 20), // WhatsApp limit
+          },
+        })),
+      },
+    },
+  });
+}
+
+async function sendWhatsappList(
+  to: string,
+  bodyText: string,
+  buttonText: string,
+  sections: Array<{
+    title: string;
+    rows: Array<{ id: string; title: string; description?: string }>;
+  }>
+) {
+  return sendWhatsappMessage({
+    to,
+    type: "interactive",
+    interactive: {
+      type: "list",
+      body: { text: bodyText },
+      action: {
+        button: buttonText,
+        sections,
+      },
+    },
+  });
+}
+
 async function sendWhatsappReaction(to: string, messageId: string, emoji: string) {
   return sendWhatsappMessage({
     to,
@@ -52,4 +99,11 @@ async function sendWhatsappMessage(payload: any) {
   return response;
 }
 
-export { sendWhatsappText, sendWhatsappImage, sendWhatsappVideo, sendWhatsappReaction };
+export {
+  sendWhatsappText,
+  sendWhatsappImage,
+  sendWhatsappVideo,
+  sendWhatsappButtons,
+  sendWhatsappList,
+  sendWhatsappReaction,
+};

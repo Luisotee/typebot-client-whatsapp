@@ -12,7 +12,13 @@ import {
   VERIFY_TOKEN,
   WORKING_REACTION,
 } from "./config";
-import { sendWhatsappReaction, sendWhatsappText, sendWhatsappVideo } from "./whatsappApi";
+import {
+  sendWhatsappReaction,
+  sendWhatsappText,
+  sendWhatsappVideo,
+  sendWhatsappButtons,
+  sendWhatsappList,
+} from "./whatsappApi";
 
 const logger = pino({ level: process.env.LOG_LEVEL || "info" });
 
@@ -43,7 +49,17 @@ app.post("/webhook", async (req, res) => {
   if (messages && messages.length > 0) {
     const msg = messages[0];
     const waId = msg.from;
-    const text = msg.text?.body;
+    let text = msg.text?.body;
+
+    // Handle interactive message responses (button/list selections)
+    if (msg.interactive) {
+      if (msg.interactive.type === "button_reply") {
+        text = msg.interactive.button_reply.title;
+      } else if (msg.interactive.type === "list_reply") {
+        text = msg.interactive.list_reply.title;
+      }
+    }
+
     const messageId = msg.id;
     logger.info({ waId, text }, "Incoming WhatsApp message");
 
@@ -143,6 +159,9 @@ app.post("/webhook", async (req, res) => {
 
         logger.info({ typebotResponse }, "Full Typebot response");
 
+        // Process Typebot messages
+        let lastTextMessage: any = null;
+        let textMessages: any[] = [];
         if (
           Array.isArray(typebotResponse.messages) &&
           typebotResponse.messages.length > 0
@@ -151,7 +170,93 @@ app.post("/webhook", async (req, res) => {
             { typebotMessages: typebotResponse.messages },
             "Typebot messages array"
           );
-          for (const message of typebotResponse.messages) {
+          textMessages = typebotResponse.messages.filter((m: any) => m.type === "text");
+          lastTextMessage = textMessages[textMessages.length - 1];
+        }
+
+        // Handle choice input (buttons/list)
+        if (typebotResponse.input?.type === "choice input") {
+          // Send all text messages except the last one
+          for (const message of textMessages.slice(0, -1)) {
+            let reply = "";
+            if (message.content?.richText) {
+              reply = message.content.richText.map(extractTextFromRichText).join("");
+            } else if (message.content?.text) {
+              reply = message.content.text;
+            } else if (message.content?.plainText) {
+              reply = message.content.plainText;
+            } else if (message.content?.html) {
+              reply = message.content.html;
+            } else if (typeof message.content === "string") {
+              reply = message.content;
+            } else {
+              reply = JSON.stringify(message.content);
+            }
+            logger.info({ waId, reply, message }, "Sending WhatsApp text reply");
+            await prisma.message.create({
+              data: {
+                userId: user.id,
+                content: reply,
+                direction: "out",
+                sessionId,
+              },
+            });
+            await sendWhatsappText(waId, reply);
+          }
+
+          // Use the last text message as the body for buttons/list
+          const bodyText = lastTextMessage
+            ? lastTextMessage.content?.richText
+              ? lastTextMessage.content.richText.map(extractTextFromRichText).join("")
+              : "Escolha uma opção:"
+            : "Escolha uma opção:";
+
+          const choices = typebotResponse.input.items || [];
+          if (choices.length <= 3) {
+            const buttons = choices.map((choice: any) => ({
+              id: choice.id,
+              title: choice.content.substring(0, 20),
+            }));
+
+            logger.info({ waId, buttons }, "Sending WhatsApp buttons");
+            await sendWhatsappButtons(waId, bodyText, buttons);
+
+            await prisma.message.create({
+              data: {
+                userId: user.id,
+                content: `[Buttons: ${choices.map((c: any) => c.content).join(", ")}]`,
+                direction: "out",
+                sessionId,
+              },
+            });
+          } else {
+            const rows = choices.map((choice: any) => ({
+              id: choice.id,
+              title: choice.content.substring(0, 24),
+              description:
+                choice.content.length > 24 ? choice.content.substring(0, 72) : undefined,
+            }));
+
+            logger.info({ waId, rows }, "Sending WhatsApp list");
+            await sendWhatsappList(waId, bodyText, "Opções", [
+              {
+                title: "Escolha uma opção",
+                rows,
+              },
+            ]);
+
+            await prisma.message.create({
+              data: {
+                userId: user.id,
+                content: `[List: ${choices.map((c: any) => c.content).join(", ")}]`,
+                direction: "out",
+                sessionId,
+              },
+            });
+          }
+        } else {
+          // If there is no choice input, send all text messages as WhatsApp text
+          for (const message of typebotResponse.messages || []) {
             if (message.type === "text") {
               let reply = "";
               if (message.content?.richText) {
@@ -177,20 +282,6 @@ app.post("/webhook", async (req, res) => {
                 },
               });
               await sendWhatsappText(waId, reply);
-            } else if (message.type === "video") {
-              const videoUrl = message.content?.url;
-              if (videoUrl) {
-                logger.info({ waId, videoUrl }, "Sending WhatsApp video");
-                await prisma.message.create({
-                  data: {
-                    userId: user.id,
-                    content: `[Video: ${videoUrl}]`,
-                    direction: "out",
-                    sessionId,
-                  },
-                });
-                await sendWhatsappVideo(waId, videoUrl);
-              }
             }
           }
         }
