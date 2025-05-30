@@ -53,22 +53,39 @@ app.post("/webhook", async (req, res) => {
       if (messageId) await sendWhatsappReaction(waId, messageId, WORKING_REACTION);
 
       if (text) {
-        await prisma.message.create({ data: { waId, content: text, direction: "in" } });
+        // Find or create user
+        let user = await prisma.user.findUnique({ where: { waId } });
+        if (!user) {
+          user = await prisma.user.create({ data: { waId } });
+          logger.info({ waId, userId: user.id }, "Created new user");
+        }
+
+        // Create incoming message
+        await prisma.message.create({
+          data: {
+            userId: user.id,
+            content: text,
+            direction: "in",
+          },
+        });
 
         // --- Typebot session logic ---
-        // Always get the latest sessionId for this waId
-        let sessionId: string | null = null;
+        // Get the latest message with sessionId for this user
         const lastMsg = await prisma.message.findFirst({
-          where: { waId, sessionId: { not: null } },
+          where: { userId: user.id, sessionId: { not: null } },
           orderBy: { timestamp: "desc" },
         });
 
+        let sessionId: string | null = null;
         let typebotResponse: any;
         let needNewSession = false;
 
         if (lastMsg && lastMsg.sessionId) {
           sessionId = lastMsg.sessionId;
-          logger.info({ waId, sessionId }, "Continuing existing Typebot session");
+          logger.info(
+            { waId, sessionId, userId: user.id },
+            "Continuing existing Typebot session"
+          );
           const continueRes = await fetch(
             `${TYPEBOT_SESSION_URL}/${sessionId}/continueChat`,
             {
@@ -82,11 +99,17 @@ app.post("/webhook", async (req, res) => {
           );
           typebotResponse = await continueRes.json();
           if (continueRes.status === 404 || typebotResponse.code === "NOT_FOUND") {
-            logger.info({ waId, sessionId }, "Typebot session not found, starting new");
+            logger.info(
+              { waId, sessionId, userId: user.id },
+              "Typebot session not found, starting new"
+            );
             needNewSession = true;
           }
         } else {
-          logger.info({ waId }, "No previous session, starting new Typebot session");
+          logger.info(
+            { waId, userId: user.id },
+            "No previous session, starting new Typebot session"
+          );
           needNewSession = true;
         }
 
@@ -101,12 +124,20 @@ app.post("/webhook", async (req, res) => {
           });
           typebotResponse = await res.json();
           sessionId = typebotResponse.sessionId;
-          logger.info({ waId, sessionId }, "Started new Typebot session");
+          logger.info(
+            { waId, sessionId, userId: user.id },
+            "Started new Typebot session"
+          );
         }
 
-        // Always update the latest incoming message with the new sessionId
+        // Update the latest incoming message with the sessionId
         await prisma.message.updateMany({
-          where: { waId, content: text, direction: "in", sessionId: null },
+          where: {
+            userId: user.id,
+            content: text,
+            direction: "in",
+            sessionId: null,
+          },
           data: { sessionId },
         });
 
@@ -138,7 +169,12 @@ app.post("/webhook", async (req, res) => {
               }
               logger.info({ waId, reply, message }, "Sending WhatsApp text reply");
               await prisma.message.create({
-                data: { waId, content: reply, direction: "out", sessionId },
+                data: {
+                  userId: user.id,
+                  content: reply,
+                  direction: "out",
+                  sessionId,
+                },
               });
               await sendWhatsappText(waId, reply);
             } else if (message.type === "video") {
@@ -147,7 +183,7 @@ app.post("/webhook", async (req, res) => {
                 logger.info({ waId, videoUrl }, "Sending WhatsApp video");
                 await prisma.message.create({
                   data: {
-                    waId,
+                    userId: user.id,
                     content: `[Video: ${videoUrl}]`,
                     direction: "out",
                     sessionId,
