@@ -3,6 +3,7 @@ import "dotenv/config";
 import express from "express";
 import pino from "pino";
 import {
+  BOT_LANGUAGE,
   DONE_REACTION,
   ERROR_REACTION,
   QUEUED_REACTION,
@@ -22,6 +23,7 @@ import {
 } from "./whatsappApi";
 import { transcribeAudio } from "./transcriptionService";
 import { downloadWhatsAppMedia } from "./mediaUtils";
+import { getMessage } from "./messages";
 
 const logger = pino({ level: process.env.LOG_LEVEL || "info" });
 
@@ -74,10 +76,7 @@ app.post("/webhook", async (req, res) => {
         );
 
         if (messageId) await sendWhatsappReaction(waId, messageId, ERROR_REACTION);
-        await sendWhatsappText(
-          waId,
-          "Sorry, I can't process audio messages at the moment. Please send your message as text instead."
-        );
+        await sendWhatsappText(waId, getMessage("transcriptionDisabled", BOT_LANGUAGE));
         res.sendStatus(200);
         return;
       }
@@ -109,10 +108,7 @@ app.post("/webhook", async (req, res) => {
       } catch (error) {
         logger.error({ error }, "Error processing audio message");
         if (messageId) await sendWhatsappReaction(waId, messageId, ERROR_REACTION);
-        await sendWhatsappText(
-          waId,
-          "Sorry, I couldn't process your audio message. Please try sending a text message."
-        );
+        await sendWhatsappText(waId, getMessage("audioProcessingError", BOT_LANGUAGE));
         res.sendStatus(200);
         return;
       }
@@ -268,8 +264,8 @@ app.post("/webhook", async (req, res) => {
           const bodyText = lastTextMessage
             ? lastTextMessage.content?.richText
               ? lastTextMessage.content.richText.map(extractTextFromRichText).join("")
-              : "Escolha uma opção:"
-            : "Escolha uma opção:";
+              : getMessage("chooseOption", BOT_LANGUAGE)
+            : getMessage("chooseOption", BOT_LANGUAGE);
 
           const choices = typebotResponse.input.items || [];
           if (choices.length <= 3) {
@@ -298,12 +294,17 @@ app.post("/webhook", async (req, res) => {
             }));
 
             logger.info({ waId, rows }, "Sending WhatsApp list");
-            await sendWhatsappList(waId, bodyText, "Opções", [
-              {
-                title: "Escolha uma opção",
-                rows,
-              },
-            ]);
+            await sendWhatsappList(
+              waId,
+              bodyText,
+              getMessage("listSectionTitle", BOT_LANGUAGE),
+              [
+                {
+                  title: getMessage("listSectionTitle", BOT_LANGUAGE),
+                  rows,
+                },
+              ]
+            );
 
             await prisma.message.create({
               data: {
@@ -351,6 +352,7 @@ app.post("/webhook", async (req, res) => {
     } catch (error) {
       logger.error({ error }, "Error processing WhatsApp message");
       if (messageId) await sendWhatsappReaction(waId, messageId, ERROR_REACTION);
+      await sendWhatsappText(waId, getMessage("generalError", BOT_LANGUAGE));
     }
   }
   res.sendStatus(200);
