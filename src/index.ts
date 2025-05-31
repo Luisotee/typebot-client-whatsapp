@@ -6,6 +6,7 @@ import {
   DONE_REACTION,
   ERROR_REACTION,
   QUEUED_REACTION,
+  TRANSCRIPTION_ENABLED,
   TYPEBOT_API_KEY,
   TYPEBOT_API_URL,
   TYPEBOT_SESSION_URL,
@@ -19,6 +20,8 @@ import {
   sendWhatsappButtons,
   sendWhatsappList,
 } from "./whatsappApi";
+import { transcribeAudio } from "./transcriptionService";
+import { downloadWhatsAppMedia } from "./mediaUtils";
 
 const logger = pino({ level: process.env.LOG_LEVEL || "info" });
 
@@ -60,13 +63,70 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
+    // Handle audio messages
+    if (msg.audio) {
+      const messageId = msg.id;
+
+      if (!TRANSCRIPTION_ENABLED) {
+        logger.info(
+          { waId, audioId: msg.audio.id },
+          "Received audio message but transcription is disabled"
+        );
+
+        if (messageId) await sendWhatsappReaction(waId, messageId, ERROR_REACTION);
+        await sendWhatsappText(
+          waId,
+          "Sorry, I can't process audio messages at the moment. Please send your message as text instead."
+        );
+        res.sendStatus(200);
+        return;
+      }
+
+      logger.info({ waId, audioId: msg.audio.id }, "Received audio message");
+
+      if (messageId) await sendWhatsappReaction(waId, messageId, QUEUED_REACTION);
+
+      try {
+        if (messageId) await sendWhatsappReaction(waId, messageId, WORKING_REACTION);
+
+        // Download audio file
+        const mediaResult = await downloadWhatsAppMedia(msg.audio.id);
+        if (!mediaResult.success) {
+          throw new Error(`Failed to download audio: ${mediaResult.error}`);
+        }
+
+        // Transcribe audio
+        const transcriptionResult = await transcribeAudio(
+          mediaResult.buffer,
+          mediaResult.mimeType
+        );
+        if (!transcriptionResult.success) {
+          throw new Error(`Failed to transcribe audio: ${transcriptionResult.error}`);
+        }
+
+        text = transcriptionResult.text;
+        logger.info({ waId, transcription: text }, "Audio transcribed successfully");
+      } catch (error) {
+        logger.error({ error }, "Error processing audio message");
+        if (messageId) await sendWhatsappReaction(waId, messageId, ERROR_REACTION);
+        await sendWhatsappText(
+          waId,
+          "Sorry, I couldn't process your audio message. Please try sending a text message."
+        );
+        res.sendStatus(200);
+        return;
+      }
+    }
+
     const messageId = msg.id;
     logger.info({ waId, text }, "Incoming WhatsApp message");
 
-    if (messageId) await sendWhatsappReaction(waId, messageId, QUEUED_REACTION);
+    if (messageId && !msg.audio)
+      await sendWhatsappReaction(waId, messageId, QUEUED_REACTION);
 
     try {
-      if (messageId) await sendWhatsappReaction(waId, messageId, WORKING_REACTION);
+      if (messageId && !msg.audio)
+        await sendWhatsappReaction(waId, messageId, WORKING_REACTION);
 
       if (text) {
         // Find or create user
@@ -80,7 +140,7 @@ app.post("/webhook", async (req, res) => {
         await prisma.message.create({
           data: {
             userId: user.id,
-            content: text,
+            content: msg.audio ? `[Audio transcribed]: ${text}` : text,
             direction: "in",
           },
         });
@@ -150,7 +210,7 @@ app.post("/webhook", async (req, res) => {
         await prisma.message.updateMany({
           where: {
             userId: user.id,
-            content: text,
+            content: msg.audio ? `[Audio transcribed]: ${text}` : text,
             direction: "in",
             sessionId: null,
           },

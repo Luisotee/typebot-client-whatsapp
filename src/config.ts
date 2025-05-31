@@ -15,3 +15,10 @@ export const QUEUED_REACTION = process.env.QUEUED_REACTION || "🔁";
 export const WORKING_REACTION = process.env.WORKING_REACTION || "⚙️";
 export const DONE_REACTION = process.env.DONE_REACTION || "✅";
 export const ERROR_REACTION = process.env.ERROR_REACTION || "⚠️";
+
+// Transcription settings
+export const TRANSCRIPTION_ENABLED = process.env.TRANSCRIPTION_ENABLED === "true";
+export const TRANSCRIPTION_TYPE = process.env.TRANSCRIPTION_TYPE || "groq";
+export const TRANSCRIPTION_LANGUAGE = process.env.TRANSCRIPTION_LANGUAGE || "pt";
+export const GROQ_API_KEY = process.env.GROQ_API_KEY!;
+export const GROQ_MODEL = process.env.GROQ_MODEL || "whisper-large-v3";
