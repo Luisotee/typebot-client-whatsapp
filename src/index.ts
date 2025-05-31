@@ -23,13 +23,34 @@ import {
 } from "./whatsappApi";
 import { transcribeAudio } from "./transcriptionService";
 import { downloadWhatsAppMedia } from "./mediaUtils";
-import { getMessage } from "./messages";
+import { getMessage } from "./localization";
+import { matchTranscriptionToOption } from "./optionMatcher";
 
 const logger = pino({ level: process.env.LOG_LEVEL || "info" });
 
 const prisma = new PrismaClient();
 const app = express();
 app.use(express.json());
+
+// Store active choice sessions temporarily
+const activeChoiceSessions = new Map<
+  string,
+  {
+    sessionId: string;
+    choices: Array<{ id: string; content: string }>;
+    timestamp: Date;
+  }
+>();
+
+// Clean up old choice sessions every 5 minutes
+setInterval(() => {
+  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+  for (const [waId, session] of activeChoiceSessions.entries()) {
+    if (session.timestamp < fiveMinutesAgo) {
+      activeChoiceSessions.delete(waId);
+    }
+  }
+}, 5 * 60 * 1000);
 
 // Webhook verification
 app.get("/webhook", (req, res) => {
@@ -63,6 +84,8 @@ app.post("/webhook", async (req, res) => {
       } else if (msg.interactive.type === "list_reply") {
         text = msg.interactive.list_reply.title;
       }
+      // Clear the active choice session since user used UI
+      activeChoiceSessions.delete(waId);
     }
 
     // Handle audio messages
@@ -105,6 +128,61 @@ app.post("/webhook", async (req, res) => {
 
         text = transcriptionResult.text;
         logger.info({ waId, transcription: text }, "Audio transcribed successfully");
+
+        // Check if this user has an active choice session
+        const activeChoice = activeChoiceSessions.get(waId);
+        if (activeChoice && text) {
+          logger.info(
+            { waId, transcription: text, choices: activeChoice.choices },
+            "Attempting to match audio to choice options"
+          );
+
+          const matchResult = matchTranscriptionToOption(text, activeChoice.choices);
+
+          if (matchResult.matched && matchResult.selectedOption) {
+            logger.info(
+              {
+                waId,
+                transcription: text,
+                matchedOption: matchResult.selectedOption.content,
+                confidence: matchResult.confidence,
+              },
+              "Successfully matched audio to choice option"
+            );
+
+            // Send confirmation message
+            await sendWhatsappText(
+              waId,
+              getMessage("audioOptionMatched", BOT_LANGUAGE, {
+                option: matchResult.selectedOption.content,
+              })
+            );
+
+            // Use the matched option as the user's choice
+            text = matchResult.selectedOption.content;
+
+            // Clear the active choice session
+            activeChoiceSessions.delete(waId);
+          } else {
+            logger.info(
+              {
+                waId,
+                transcription: text,
+                confidence: matchResult.confidence,
+                availableOptions: activeChoice.choices.map((c) => c.content),
+              },
+              "Could not match audio to any choice option"
+            );
+
+            if (messageId) await sendWhatsappReaction(waId, messageId, ERROR_REACTION);
+            await sendWhatsappText(
+              waId,
+              getMessage("audioOptionNotMatched", BOT_LANGUAGE)
+            );
+            res.sendStatus(200);
+            return;
+          }
+        }
       } catch (error) {
         logger.error({ error }, "Error processing audio message");
         if (messageId) await sendWhatsappReaction(waId, messageId, ERROR_REACTION);
@@ -115,7 +193,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     const messageId = msg.id;
-    logger.info({ waId, text }, "Incoming WhatsApp message");
+    //logger.info({ waId, text }, "Incoming WhatsApp message");
 
     if (messageId && !msg.audio)
       await sendWhatsappReaction(waId, messageId, QUEUED_REACTION);
@@ -268,6 +346,23 @@ app.post("/webhook", async (req, res) => {
             : getMessage("chooseOption", BOT_LANGUAGE);
 
           const choices = typebotResponse.input.items || [];
+
+          // Store the active choice session for audio matching
+          if (sessionId && choices.length > 0) {
+            activeChoiceSessions.set(waId, {
+              sessionId,
+              choices: choices.map((choice: any) => ({
+                id: choice.id,
+                content: choice.content,
+              })),
+              timestamp: new Date(),
+            });
+            logger.info(
+              { waId, sessionId, choicesCount: choices.length },
+              "Stored active choice session for audio matching"
+            );
+          }
+
           if (choices.length <= 3) {
             const buttons = choices.map((choice: any) => ({
               id: choice.id,
@@ -316,6 +411,9 @@ app.post("/webhook", async (req, res) => {
             });
           }
         } else {
+          // Clear any active choice session since there's no choice input
+          activeChoiceSessions.delete(waId);
+
           // If there is no choice input, send all text messages as WhatsApp text
           for (const message of typebotResponse.messages || []) {
             if (message.type === "text") {
