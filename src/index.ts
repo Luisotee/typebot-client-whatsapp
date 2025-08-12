@@ -219,6 +219,27 @@ app.post("/webhook", async (req, res) => {
           },
         });
 
+        // Example: Send video for specific keywords
+        if (text.toLowerCase().includes("video") || text.toLowerCase().includes("demo")) {
+          const videoUrl = "https://example.com/your-video.mp4";
+          const caption = "Here's the video you requested!";
+
+          logger.info(
+            { waId, videoUrl, caption },
+            "Sending video in response to keyword"
+          );
+          await sendWhatsappVideo(waId, videoUrl, caption);
+
+          await prisma.message.create({
+            data: {
+              userId: user.id,
+              content: `[Video sent: ${videoUrl}]`,
+              direction: "out",
+              sessionId: null,
+            },
+          });
+        }
+
         // --- Typebot session logic ---
         // Get the latest message with sessionId for this user
         const lastMsg = await prisma.message.findFirst({
@@ -441,6 +462,24 @@ app.post("/webhook", async (req, res) => {
                 },
               });
               await sendWhatsappText(waId, reply);
+            } else if (message.type === "video") {
+              // Handle video messages from Typebot
+              const videoUrl = message.content?.url || message.content?.link;
+              const caption = message.content?.caption;
+
+              if (videoUrl) {
+                logger.info({ waId, videoUrl, caption }, "Sending WhatsApp video");
+                await sendWhatsappVideo(waId, videoUrl, caption);
+
+                await prisma.message.create({
+                  data: {
+                    userId: user.id,
+                    content: `[Video: ${videoUrl}]${caption ? ` - ${caption}` : ""}`,
+                    direction: "out",
+                    sessionId,
+                  },
+                });
+              }
             }
           }
         }
