@@ -1,6 +1,8 @@
 import "dotenv/config";
 import { ACCESS_TOKEN, PHONE_NUMBER_ID, WHATSAPP_API_URL } from "./config";
 
+export const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function sendWhatsappText(to: string, text: string) {
   return sendWhatsappMessage({
     to,
@@ -18,11 +20,13 @@ async function sendWhatsappImage(to: string, imageUrl: string, caption?: string)
 }
 
 async function sendWhatsappVideo(to: string, videoUrl: string, caption?: string) {
-  return sendWhatsappMessage({
+  const response = await sendWhatsappMessage({
     to,
     type: "video",
     video: { link: videoUrl, caption },
   });
+  await delay(10000);
+  return response;
 }
 
 async function sendWhatsappButtons(

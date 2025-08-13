@@ -331,33 +331,63 @@ app.post("/webhook", async (req, res) => {
 
         // Handle choice input (buttons/list)
         if (typebotResponse.input?.type === "choice input") {
-          // Send all text messages except the last one
-          for (const message of textMessages.slice(0, -1)) {
-            let reply = "";
-            if (message.content?.richText) {
-              reply = message.content.richText.map(extractTextFromRichText).join("");
-            } else if (message.content?.text) {
-              reply = message.content.text;
-            } else if (message.content?.plainText) {
-              reply = message.content.plainText;
-            } else if (message.content?.html) {
-              reply = message.content.html;
-            } else if (typeof message.content === "string") {
-              reply = message.content;
-            } else {
-              reply = JSON.stringify(message.content);
+          // Send all messages (including videos) before the interactive prompt,
+          // but skip the last text message which will be used as the interactive body.
+          for (const message of typebotResponse.messages || []) {
+            if (
+              lastTextMessage &&
+              message.id === lastTextMessage.id &&
+              message.type === "text"
+            ) {
+              continue;
             }
-            logger.info({ waId, reply, message }, "Sending WhatsApp text reply");
-            await prisma.message.create({
-              data: {
-                userId: user.id,
-                content: reply,
-                direction: "out",
-                sessionId,
-              },
-            });
-            await sendWhatsappText(waId, reply);
+
+            if (message.type === "text") {
+              let reply = "";
+              if (message.content?.richText) {
+                reply = message.content.richText.map(extractTextFromRichText).join("");
+              } else if (message.content?.text) {
+                reply = message.content.text;
+              } else if (message.content?.plainText) {
+                reply = message.content.plainText;
+              } else if (message.content?.html) {
+                reply = message.content.html;
+              } else if (typeof message.content === "string") {
+                reply = message.content;
+              } else {
+                reply = JSON.stringify(message.content);
+              }
+              logger.info({ waId, reply, message }, "Sending WhatsApp text reply");
+              await prisma.message.create({
+                data: {
+                  userId: user.id,
+                  content: reply,
+                  direction: "out",
+                  sessionId,
+                },
+              });
+              await sendWhatsappText(waId, reply);
+            } else if (message.type === "video") {
+              const videoUrl = message.content?.url || message.content?.link;
+              const caption = message.content?.caption;
+
+              if (videoUrl) {
+                logger.info({ waId, videoUrl, caption }, "Sending WhatsApp video");
+                await sendWhatsappVideo(waId, videoUrl, caption);
+
+                await prisma.message.create({
+                  data: {
+                    userId: user.id,
+                    content: `[Video: ${videoUrl}]${caption ? ` - ${caption}` : ""}`,
+                    direction: "out",
+                    sessionId,
+                  },
+                });
+              }
+            }
           }
+
+          // Video sends already include a 10s wait in the WhatsApp API wrapper
 
           // Use the last text message as the body for buttons/list
           const bodyText = lastTextMessage
@@ -487,7 +517,14 @@ app.post("/webhook", async (req, res) => {
 
       if (messageId) await sendWhatsappReaction(waId, messageId, DONE_REACTION);
     } catch (error) {
-      logger.error({ error }, "Error processing WhatsApp message");
+      logger.error(
+        {
+          errorMessage: error instanceof Error ? error.message : String(error),
+          errorStack: error instanceof Error ? error.stack : undefined,
+          errorObject: error,
+        },
+        "Error processing WhatsApp message"
+      );
       if (messageId) await sendWhatsappReaction(waId, messageId, ERROR_REACTION);
       await sendWhatsappText(waId, getMessage("generalError", BOT_LANGUAGE));
     }
