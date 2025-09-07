@@ -345,7 +345,7 @@ app.post("/webhook", async (req, res) => {
             if (message.type === "text") {
               let reply = "";
               if (message.content?.richText) {
-                reply = message.content.richText.map(extractTextFromRichText).join("");
+                reply = extractFormattedTextFromRichText(message.content.richText);
               } else if (message.content?.text) {
                 reply = message.content.text;
               } else if (message.content?.plainText) {
@@ -392,7 +392,7 @@ app.post("/webhook", async (req, res) => {
           // Use the last text message as the body for buttons/list
           const bodyText = lastTextMessage
             ? lastTextMessage.content?.richText
-              ? lastTextMessage.content.richText.map(extractTextFromRichText).join("")
+              ? extractFormattedTextFromRichText(lastTextMessage.content.richText)
               : getMessage("chooseOption", BOT_LANGUAGE)
             : getMessage("chooseOption", BOT_LANGUAGE);
 
@@ -470,7 +470,7 @@ app.post("/webhook", async (req, res) => {
             if (message.type === "text") {
               let reply = "";
               if (message.content?.richText) {
-                reply = message.content.richText.map(extractTextFromRichText).join("");
+                reply = extractFormattedTextFromRichText(message.content.richText);
               } else if (message.content?.text) {
                 reply = message.content.text;
               } else if (message.content?.plainText) {
@@ -540,6 +540,22 @@ function extractTextFromRichText(node: any): string {
     return node.children.map(extractTextFromRichText).join("");
   }
   return "";
+}
+
+// Helper to extract text from richText with proper paragraph formatting
+function extractFormattedTextFromRichText(richText: any[]): string {
+  return richText
+    .map((node) => {
+      if (node.type === "p") {
+        // Extract text from paragraph and add line break
+        const paragraphText = node.children
+          ? node.children.map(extractTextFromRichText).join("")
+          : "";
+        return paragraphText + "\n";
+      }
+      return extractTextFromRichText(node);
+    })
+    .join("");
 }
 
 const PORT = process.env.PORT || 3000;
