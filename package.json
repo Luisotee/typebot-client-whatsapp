@@ -23,6 +23,15 @@
   "scripts": {
     "dev": "tsx watch src/index.ts | pino-pretty",
     "start": "node --enable-source-maps dist/index.js | pino-pretty",
-    "build": "prisma generate && prisma migrate deploy"
+    "build": "tsc && prisma generate && prisma migrate deploy",
+    "build:clean": "rm -rf dist && npm run build",
+    "typecheck": "tsc --noEmit",
+    "lint": "echo 'Linting not configured - consider adding eslint'",
+    "test": "echo 'Tests not configured - consider adding jest or vitest'",
+    "db:migrate": "prisma migrate deploy",
+    "db:generate": "prisma generate",
+    "db:studio": "prisma studio",
+    "db:reset": "prisma migrate reset",
+    "health": "curl -f http://localhost:3000/health || exit 1"
   }
 }
