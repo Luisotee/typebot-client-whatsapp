@@ -5,18 +5,25 @@ import { AppConfig } from "../types/common.types";
  * Validates that all required environment variables are present
  */
 function validateRequiredEnvVars(): void {
-  const required = [
-    'WHATSAPP_VERIFY_TOKEN',
-    'WHATSAPP_TOKEN',
-    'WHATSAPP_PHONE_NUMBER_ID',
-    'WHATSAPP_API_URL',
+  // Check if using Baileys or Meta API
+  const useBaileys = process.env.WHATSAPP_MODE === 'baileys';
+
+  const baseRequired = [
     'TYPEBOT_ID',
     'TYPEBOT_API_KEY',
     'DATABASE_URL'
   ];
 
+  const metaApiRequired = [
+    'WHATSAPP_VERIFY_TOKEN',
+    'WHATSAPP_TOKEN',
+    'WHATSAPP_PHONE_NUMBER_ID',
+    'WHATSAPP_API_URL'
+  ];
+
+  const required = useBaileys ? baseRequired : [...baseRequired, ...metaApiRequired];
   const missing = required.filter(key => !process.env[key]);
-  
+
   if (missing.length > 0) {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
   }
@@ -54,12 +61,24 @@ export function loadConfig(): AppConfig {
   validateUrl(whatsappApiUrl, 'WHATSAPP_API_URL');
   validateUrl(typebotApiBase, 'TYPEBOT_API_BASE');
   
+  const useBaileys = process.env.WHATSAPP_MODE === 'baileys';
+
   const config: AppConfig = {
     whatsapp: {
-      verifyToken: process.env.WHATSAPP_VERIFY_TOKEN!,
-      accessToken: process.env.WHATSAPP_TOKEN!,
-      phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID!,
-      apiUrl: whatsappApiUrl,
+      mode: useBaileys ? 'baileys' : 'meta',
+      // Meta API fields (optional when using Baileys)
+      verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || '',
+      accessToken: process.env.WHATSAPP_TOKEN || '',
+      phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || '',
+      apiUrl: process.env.WHATSAPP_API_URL || '',
+      // Baileys specific configuration
+      baileys: {
+        sessionDir: process.env.BAILEYS_SESSION_DIR || 'auth_info_baileys',
+        browser: process.env.BAILEYS_BROWSER || 'TypeBot WhatsApp Client',
+        printQRInTerminal: process.env.BAILEYS_PRINT_QR !== 'false',
+        markOnlineOnConnect: process.env.BAILEYS_MARK_ONLINE === 'true',
+        syncFullHistory: process.env.BAILEYS_SYNC_HISTORY === 'true'
+      }
     },
     
     typebot: {

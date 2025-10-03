@@ -1,21 +1,41 @@
 # Typebot Client WhatsApp
 
-This project connects [Typebot](https://typebot.io/) conversational bots to WhatsApp using the WhatsApp Cloud API. It acts as a middleware, forwarding WhatsApp messages to Typebot and sending Typebot's responses back to WhatsApp users.
+This project connects [Typebot](https://typebot.io/) conversational bots to WhatsApp using either the official WhatsApp Cloud API or the unofficial Baileys library. It acts as a middleware, forwarding WhatsApp messages to Typebot and sending Typebot's responses back to WhatsApp users.
 
 ## Features
 
-- Receives WhatsApp messages via webhook
+- **Dual WhatsApp Integration**: Choose between Meta's official WhatsApp Cloud API or the unofficial Baileys library
+- Receives WhatsApp messages (via webhook for Meta API or direct connection for Baileys)
 - Forwards messages to a Typebot flow
-- Sends Typebot responses (text, video, etc.) back to WhatsApp
+- Sends Typebot responses (text, video, images, etc.) back to WhatsApp
+- **Interactive Fallbacks**: For Baileys, buttons and lists are converted to numbered text options
 - Supports session management and reactions (queued, working, done, error)
+- Audio transcription support (optional)
 - Persists messages and sessions using SQLite (via Prisma)
+
+## WhatsApp Integration Modes
+
+### 1. Meta WhatsApp Cloud API (Official)
+- ✅ Interactive buttons and lists
+- ✅ Media messages (images, videos, audio, documents)
+- ✅ Message status tracking
+- ❌ Requires business verification for production
+- ❌ Limited to approved message templates for marketing
+
+### 2. Baileys (Unofficial)
+- ✅ Direct connection to WhatsApp Web
+- ✅ Media messages (images, videos, audio, documents)
+- ✅ No business verification required
+- ❌ Interactive buttons/lists converted to numbered text fallbacks
+- ❌ Potential for account suspension if detected by WhatsApp
+- ⚠️ Use at your own risk
 
 ## Requirements
 
 - Node.js 18+
-- WhatsApp Cloud API credentials
+- **For Meta API**: WhatsApp Cloud API credentials and a public domain for webhooks
+- **For Baileys**: A WhatsApp account and QR code scanning capability
 - Typebot API credentials
-- A public domain for webhook delivery
 
 ## Setup
 

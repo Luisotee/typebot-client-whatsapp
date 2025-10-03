@@ -1,10 +1,20 @@
 export interface AppConfig {
   // WhatsApp Configuration
   whatsapp: {
+    mode: 'meta' | 'baileys';
+    // Meta API Configuration (optional when using Baileys)
     verifyToken: string;
     accessToken: string;
     phoneNumberId: string;
     apiUrl: string;
+    // Baileys Configuration
+    baileys: {
+      sessionDir: string;
+      browser: string;
+      printQRInTerminal: boolean;
+      markOnlineOnConnect: boolean;
+      syncFullHistory: boolean;
+    };
   };
   
   // Typebot Configuration

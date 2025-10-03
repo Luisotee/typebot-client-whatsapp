@@ -46,6 +46,11 @@ export interface WhatsAppMessage {
   interactive?: WhatsAppInteractiveMessage;
   button?: WhatsAppButtonMessage;
   context?: WhatsAppMessageContext;
+  // Baileys compatibility fields
+  baileys?: {
+    rawMessage?: any;
+    messageTimestamp?: number;
+  };
 }
 
 export type WhatsAppMessageType = 
@@ -70,7 +75,7 @@ export interface WhatsAppMediaMessage {
 }
 
 export interface WhatsAppInteractiveMessage {
-  type: 'button_reply' | 'list_reply';
+  type: 'button_reply' | 'list_reply' | 'text_reply'; // Added text_reply for Baileys fallbacks
   button_reply?: {
     id: string;
     title: string;
@@ -79,6 +84,11 @@ export interface WhatsAppInteractiveMessage {
     id: string;
     title: string;
     description?: string;
+  };
+  // Baileys fallback for interactive messages
+  text_reply?: {
+    text: string;
+    originalNumber?: number; // For numbered responses
   };
 }
 
@@ -143,14 +153,23 @@ export interface WhatsAppRow {
 }
 
 export interface WhatsAppApiResponse {
-  messaging_product: string;
-  contacts: Array<{
+  messaging_product?: string; // Optional for Baileys compatibility
+  contacts?: Array<{
     input: string;
     wa_id: string;
   }>;
-  messages: Array<{
+  messages?: Array<{
     id: string;
   }>;
+  // Baileys response format
+  baileys?: {
+    key: {
+      remoteJid: string;
+      fromMe: boolean;
+      id: string;
+    };
+    messageTimestamp: number;
+  };
 }
 
 export interface WhatsAppMediaDownloadResponse {

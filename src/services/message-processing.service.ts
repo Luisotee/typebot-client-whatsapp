@@ -12,7 +12,7 @@ import {
   downloadMedia,
   sendButtonMessage,
   sendListMessage,
-} from "./whatsapp.service";
+} from "./unified-whatsapp.service";
 import {
   startChat,
   continueChat,

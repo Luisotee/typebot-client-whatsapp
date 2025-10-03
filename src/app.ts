@@ -3,10 +3,12 @@ import { PrismaClient } from '@prisma/client';
 import { appLogger } from './utils/logger';
 import { errorHandler, asyncHandler } from './middleware/error-handler';
 import { skipLoggingFor } from './middleware/request-logger';
-import { verifyWebhook, handleWebhook, healthCheck } from './controllers/webhook.controller';
+import { verifyWebhook, handleWebhook, healthCheck, handleBaileysMessage } from './controllers/webhook.controller';
 import { initializeSessionManagement } from './services/session.service';
 import { getTranscriptionInfo } from './services/transcription.service';
 import { getActiveSessionsCountForProcessing } from './services/message-processing.service';
+import { initializeWhatsAppService, getWhatsAppMode, getBaileysSocket } from './services/unified-whatsapp.service';
+import { config } from './config/config';
 
 /**
  * Creates and configures the Express application
@@ -45,6 +47,25 @@ export function createApp(): express.Application {
   // Initialize session management
   initializeSessionManagement();
 
+  // Initialize WhatsApp service (Baileys or Meta API)
+  const initWhatsApp = async () => {
+    try {
+      await initializeWhatsAppService();
+      appLogger.info({ mode: getWhatsAppMode() }, 'WhatsApp service initialized successfully');
+
+      // Set up Baileys event handlers if using Baileys
+      if (config.whatsapp.mode === 'baileys') {
+        setupBaileysEventHandlers(prisma);
+      }
+    } catch (error) {
+      appLogger.error({ error }, 'Failed to initialize WhatsApp service');
+      // Don't exit here, let the app start and maybe retry later
+    }
+  };
+
+  // Initialize WhatsApp service asynchronously
+  initWhatsApp();
+
   // Middleware
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true }));
@@ -80,6 +101,10 @@ export function createApp(): express.Application {
   app.get('/info', (req, res) => {
     res.json({
       services: {
+        whatsapp: {
+          mode: getWhatsAppMode(),
+          connected: config.whatsapp.mode === 'baileys' ? !!getBaileysSocket() : 'unknown'
+        },
         transcription: getTranscriptionInfo(),
         activeSessions: getActiveSessionsCountForProcessing(),
       },
@@ -125,4 +150,59 @@ export function createApp(): express.Application {
   (app as any).prisma = prisma;
 
   return app;
+}
+
+/**
+ * Sets up Baileys event handlers for message processing
+ */
+function setupBaileysEventHandlers(prisma: PrismaClient): void {
+  const socket = getBaileysSocket();
+
+  if (!socket) {
+    appLogger.warn({}, 'Cannot setup Baileys event handlers - socket not available');
+    return;
+  }
+
+  // Handle incoming messages
+  socket.ev.on('messages.upsert', ({ messages }) => {
+    for (const message of messages) {
+      // Only process messages not sent by us
+      if (!message.key.fromMe && message.message) {
+        appLogger.debug({
+          messageId: message.key.id || undefined,
+          from: message.key.remoteJid || undefined,
+          type: require('@whiskeysockets/baileys').getContentType(message.message)
+        }, 'Processing incoming Baileys message');
+
+        // Handle the message
+        handleBaileysMessage(prisma, message).catch(error => {
+          appLogger.error({
+            messageId: message.key.id || undefined,
+            from: message.key.remoteJid || undefined,
+            error
+          }, 'Error handling Baileys message');
+        });
+      }
+    }
+  });
+
+  // Handle connection updates
+  socket.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
+    if (qr) {
+      appLogger.info({}, 'QR Code generated for WhatsApp connection');
+    }
+
+    if (connection) {
+      appLogger.info({ connection }, `WhatsApp connection status: ${connection}`);
+    }
+
+    if (lastDisconnect) {
+      appLogger.warn({
+        error: lastDisconnect.error,
+        statusCode: (lastDisconnect.error as any)?.output?.statusCode
+      }, 'WhatsApp connection error');
+    }
+  });
+
+  appLogger.info({}, 'Baileys event handlers set up successfully');
 }

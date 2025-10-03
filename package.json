@@ -4,14 +4,17 @@
   "main": "index.js",
   "license": "MIT",
   "dependencies": {
+    "@hapi/boom": "^10.0.1",
     "@prisma/client": "^6.8.2",
+    "@whiskeysockets/baileys": "^7.0.0-rc.4",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
     "fuse.js": "^7.1.0",
     "groq-sdk": "^0.23.0",
     "pino": "^9.7.0",
     "prisma": "^6.8.2",
-    "qrcode-terminal": "^0.12.0"
+    "qrcode-terminal": "^0.12.0",
+    "sharp": "^0.34.4"
   },
   "devDependencies": {
     "@types/express": "^5.0.2",

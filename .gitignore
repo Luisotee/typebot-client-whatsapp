@@ -27,3 +27,5 @@ yarn-error.log*
 # OS files
 .DS_Store
 Thumbs.db
+
+auth_info_baileys/
