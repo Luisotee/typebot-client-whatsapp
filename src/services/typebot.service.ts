@@ -27,17 +27,26 @@ export async function startChat(
   const context = { waId, operation: "typebot_start_chat", typebotId: activeTypebotId };
   const endpoint = `${typebot.apiBase}/typebots/${activeTypebotId}/startChat`;
 
+  // Add phone number as prefilled variable if waId is provided
+  const requestWithPhone = {
+    ...request,
+    prefilledVariables: {
+      ...request.prefilledVariables,
+      ...(waId && { userPhoneNumber: waId })
+    }
+  };
+
   appLogger.typebotApiCall({
     ...context,
     endpoint: `/typebots/${activeTypebotId}/startChat`,
     method: "POST",
-    requestBody: request,
+    requestBody: requestWithPhone,
   });
 
   return withServiceResponse(async () => {
     const response = await makeApiCall<TypebotStartChatResponse>(endpoint, {
       method: "POST",
-      body: JSON.stringify(request),
+      body: JSON.stringify(requestWithPhone),
     });
 
     // Check if we got redirected to a different typebot
@@ -206,20 +215,20 @@ function translateTypebotMessage(text: string): string {
 }
 
 /**
- * Recursively extracts text from a rich text node and its children
+ * Recursively extracts text from a rich text child node
  */
-function extractTextFromNode(node: any): string {
-  // If node has direct text, return it
-  if (node.text) {
-    return node.text;
+function extractTextFromChild(child: any): string {
+  // Direct text node
+  if (child.text !== undefined) {
+    return child.text;
   }
 
-  // If node has children, recursively extract text from them
-  if (node.children && Array.isArray(node.children)) {
-    return node.children.map((child: any) => extractTextFromNode(child)).join('');
+  // Nested children (like inline-variable)
+  if (child.children && Array.isArray(child.children)) {
+    return child.children.map((nestedChild: any) => extractTextFromChild(nestedChild)).join("");
   }
 
-  return '';
+  return "";
 }
 
 /**
@@ -231,7 +240,7 @@ export function extractTextFromMessage(message: TypebotMessage): string {
   }
 
   const extractedText = message.content.richText
-    .map((richText) => extractTextFromNode(richText))
+    .map((richText) => richText.children.map((child) => extractTextFromChild(child)).join(""))
     .join("\n")
     .trim();
 
