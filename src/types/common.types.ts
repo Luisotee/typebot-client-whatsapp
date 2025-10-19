@@ -49,7 +49,13 @@ export interface AppConfig {
   bot: {
     language: string;
   };
-  
+
+  // Whitelist Configuration
+  whitelist: {
+    enabled: boolean;
+    admins: string[];
+  };
+
   // Database Configuration
   database: {
     url: string;

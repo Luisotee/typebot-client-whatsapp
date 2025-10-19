@@ -36,7 +36,9 @@ import {
   getActiveTypebotId,
   setActiveTypebotId,
 } from "./session.service";
-import { typebot } from "../config/config";
+import { typebot, whitelist } from "../config/config";
+import { handleCommand } from "./command-handler.service";
+import { isWhitelisted } from "./whitelist.service";
 
 /**
  * Converts Google Drive URLs to WhatsApp-compatible direct URLs
@@ -71,7 +73,47 @@ export async function processMessage(
 
 
   try {
-    // Step 1: Get or create user
+    // Step 1: Check whitelist first (before processing anything)
+    if (whitelist.enabled) {
+      const allowed = await isWhitelisted(message.waId);
+
+      if (!allowed) {
+        appLogger.warn({ waId: message.waId }, 'User not in whitelist, message rejected');
+
+        // Send a polite rejection message
+        await sendTextMessage(
+          message.waId,
+          '⚠️ Desculpe, mas você não tem permissão para usar este bot. Entre em contato com o administrador.'
+        );
+        await sendErrorReaction(message.waId, message.id);
+        return;
+      }
+    }
+
+    // Step 2: Check for admin commands (after whitelist check)
+    if (message.type === "text") {
+      const commandResult = await handleCommand(message.content, message.waId);
+
+      if (commandResult.handled) {
+        // Command was handled, send response if any
+        if (commandResult.response) {
+          await sendTextMessage(message.waId, commandResult.response);
+          await sendDoneReaction(message.waId, message.id);
+        }
+
+        // Don't continue with normal processing unless specified
+        if (!commandResult.shouldContinue) {
+          appLogger.info({
+            waId: message.waId,
+            command: message.content,
+            duration: Date.now() - startTime
+          }, 'Command processed successfully');
+          return;
+        }
+      }
+    }
+
+    // Step 3: Get or create user
     const userResult = await getOrCreateUser(prisma, message.waId);
     if (!userResult.success || !userResult.data) {
       throw new Error(`Failed to get/create user: ${userResult.error}`);

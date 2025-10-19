@@ -109,7 +109,14 @@ export function loadConfig(): AppConfig {
     bot: {
       language: process.env.BOT_LANGUAGE || 'en',
     },
-    
+
+    whitelist: {
+      enabled: process.env.WHITELIST_ENABLED === 'true',
+      admins: process.env.WHITELIST_ADMINS
+        ? process.env.WHITELIST_ADMINS.split(',').map(num => num.trim())
+        : [],
+    },
+
     database: {
       url: process.env.DATABASE_URL!,
     },
@@ -126,13 +133,14 @@ export const config = loadConfig();
 /**
  * Export individual config sections for convenience
  */
-export const { 
-  whatsapp, 
-  typebot, 
-  transcription, 
-  reactions, 
-  bot, 
-  database 
+export const {
+  whatsapp,
+  typebot,
+  transcription,
+  reactions,
+  bot,
+  whitelist,
+  database
 } = config;
 
 /**

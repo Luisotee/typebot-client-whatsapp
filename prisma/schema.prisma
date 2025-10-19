@@ -24,10 +24,20 @@ model Message {
   direction String   // 'in' or 'out'
   timestamp DateTime @default(now())
   sessionId String?
-  
+
   // Foreign key to User
   userId    Int
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+
   @@index([userId, timestamp])
+}
+
+model WhitelistedUser {
+  id        Int      @id @default(autoincrement())
+  waId      String   @unique
+  addedBy   String   // waId of the admin who added this user
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([waId])
 }
