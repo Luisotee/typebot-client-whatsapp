@@ -131,6 +131,7 @@ export function convertToProcessedMessage(
 ): ProcessedMessage {
   let content = '';
   let mediaUrl: string | undefined;
+  let baileysMessage: WAMessage | undefined;
 
   // Extract content based on message type
   if (whatsappMessage.text) {
@@ -144,6 +145,10 @@ export function convertToProcessedMessage(
   } else if (whatsappMessage.audio) {
     content = '[Audio]';
     mediaUrl = whatsappMessage.audio.id;
+    // For Baileys audio messages, store the raw message for download
+    if (whatsappMessage.baileys?.rawMessage) {
+      baileysMessage = whatsappMessage.baileys.rawMessage;
+    }
   } else if (whatsappMessage.document) {
     content = whatsappMessage.document.caption || '[Document]';
     mediaUrl = whatsappMessage.document.id;
@@ -164,7 +169,8 @@ export function convertToProcessedMessage(
     type: mapWhatsAppTypeToProcessedType(whatsappMessage.type),
     timestamp: new Date(parseInt(whatsappMessage.timestamp) * 1000),
     sessionId,
-    mediaUrl
+    mediaUrl,
+    baileysMessage
   };
 }
 

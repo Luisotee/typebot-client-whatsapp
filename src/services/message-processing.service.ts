@@ -154,6 +154,17 @@ export async function processMessage(
         finalContent = "Sorry, I couldn't process your audio message.";
         shouldSendToTypebot = false;
       }
+    } else if (message.type === "text") {
+      // Check for numeric choice selection (e.g., "1", "2", "3")
+      const numericResult = processNumericChoice(message.content, message.waId);
+      if (numericResult.matched) {
+        finalContent = numericResult.content;
+        appLogger.info({
+          waId: message.waId,
+          originalInput: message.content,
+          matchedChoice: finalContent,
+        }, '🔢 Matched numeric choice selection');
+      }
     }
 
     // Step 5: Send working reaction
@@ -225,6 +236,37 @@ export async function processMessage(
 }
 
 /**
+ * Processes numeric choice selection (e.g., "1", "2", "3")
+ */
+function processNumericChoice(content: string, waId: string): { matched: boolean; content: string } {
+  // Get active choices for this user
+  const activeChoices = getActiveChoices(waId);
+
+  if (!activeChoices || activeChoices.length === 0) {
+    return { matched: false, content };
+  }
+
+  // Check if the content is a number
+  const trimmedContent = content.trim();
+  const choiceNumber = parseInt(trimmedContent, 10);
+
+  // Validate the number is within the valid range
+  if (!isNaN(choiceNumber) && choiceNumber >= 1 && choiceNumber <= activeChoices.length) {
+    const selectedChoice = activeChoices[choiceNumber - 1]; // Array is 0-indexed
+
+    // Clear active choices after successful match
+    clearActiveChoices(waId);
+
+    return {
+      matched: true,
+      content: selectedChoice.content
+    };
+  }
+
+  return { matched: false, content };
+}
+
+/**
  * Processes audio messages with transcription and choice matching
  */
 async function processAudioMessage(message: ProcessedMessage): Promise<
@@ -241,13 +283,20 @@ async function processAudioMessage(message: ProcessedMessage): Promise<
   };
 
   try {
-    if (!message.mediaUrl) {
-      return { success: false, error: "No media URL provided" };
+    if (!message.mediaUrl && !message.baileysMessage) {
+      return { success: false, error: "No media URL or Baileys message provided" };
     }
 
-    // Download audio
-    const downloadResult = await downloadMedia(message.mediaUrl, message.waId);
+    // Download audio - use baileysMessage if available (for Baileys mode), otherwise use mediaUrl (for Meta mode)
+    const downloadTarget = message.baileysMessage || message.mediaUrl;
+    const downloadResult = await downloadMedia(downloadTarget, message.waId);
     if (!downloadResult.success || !downloadResult.data) {
+      appLogger.error({
+        ...context,
+        error: downloadResult.error,
+        hasBaileysMessage: !!message.baileysMessage,
+        hasMediaUrl: !!message.mediaUrl
+      }, 'Failed to download audio');
       return {
         success: false,
         error: `Failed to download audio: ${downloadResult.error}`,

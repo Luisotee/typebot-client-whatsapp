@@ -6,15 +6,15 @@ import makeWASocket, {
   proto,
   downloadMediaMessage,
   getContentType,
-  Browsers
+  Browsers,
+  fetchLatestBaileysVersion
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import qrcode from 'qrcode-terminal';
+import pino from 'pino';
 import { ServiceResponse } from "../types/common.types";
-import { appLogger } from "../utils/logger";
-import { withServiceResponse, withRetry, sleep } from "../utils/retry";
-import * as fs from 'fs';
-import * as path from 'path';
+import { appLogger, logger } from "../utils/logger";
+import { withServiceResponse } from "../utils/retry";
 
 // Global socket instance
 let sock: WASocket | null = null;
@@ -22,102 +22,82 @@ let sock: WASocket | null = null;
 // Simple in-memory message cache for getMessage functionality
 const messageCache = new Map<string, proto.IWebMessageInfo>();
 
+// Create a minimal logger for Baileys that only logs fatal errors
+const baileysLogger = pino({
+  level: 'fatal', // Only log fatal errors, suppress everything else
+});
+
 /**
  * Initializes Baileys WhatsApp client
  */
 export async function initializeBaileySocket(): Promise<void> {
-  try {
-    appLogger.info({}, 'Step 1: Creating auth directory...');
-    // Create auth directory if it doesn't exist
-    const authDir = path.join(process.cwd(), 'auth_info_baileys');
-    if (!fs.existsSync(authDir)) {
-      fs.mkdirSync(authDir, { recursive: true });
-      appLogger.info({ authDir }, 'Created auth directory');
-    } else {
-      appLogger.info({ authDir }, 'Auth directory already exists');
+  const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+
+  // Fetch the latest WhatsApp Web version to avoid 405 errors
+  const { version, isLatest } = await fetchLatestBaileysVersion();
+  console.log(`Using WhatsApp version ${version.join('.')}, isLatest: ${isLatest}`);
+
+  sock = makeWASocket({
+    auth: state,
+    version,
+    browser: Browsers.ubuntu('TypeBot WhatsApp Client'),
+    printQRInTerminal: false,
+    markOnlineOnConnect: false,
+    syncFullHistory: false,
+    generateHighQualityLinkPreview: true,
+    logger: baileysLogger, // Silent logger to suppress verbose logs
+    getMessage: async (key) => {
+      const msgKey = `${key.remoteJid}_${key.id}`;
+      const cachedMsg = messageCache.get(msgKey);
+      return cachedMsg?.message || undefined;
+    }
+  });
+
+  // Handle connection updates
+  sock.ev.on('connection.update', (update) => {
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr) {
+      console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('📱 Scan this QR code with WhatsApp to connect:');
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+      qrcode.generate(qr, { small: true });
+      console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     }
 
-    appLogger.info({}, 'Step 2: Loading auth state...');
-    // Get auth state
-    const { state, saveCreds } = await useMultiFileAuthState(authDir);
-    appLogger.info({}, 'Auth state loaded successfully');
+    if (connection === 'close') {
+      const shouldReconnect = (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
+      console.log('connection closed due to', lastDisconnect?.error, ', reconnecting', shouldReconnect);
 
-    appLogger.info({}, 'Step 3: Creating socket...');
-    // Create socket
-    sock = makeWASocket({
-      auth: state,
-      browser: Browsers.ubuntu('TypeBot WhatsApp Client'),
-      printQRInTerminal: false, // We'll use qrcode-terminal instead
-      markOnlineOnConnect: false,
-      syncFullHistory: false,
-      generateHighQualityLinkPreview: true,
-      getMessage: async (key) => {
-        // Return cached message if available
-        const msgKey = `${key.remoteJid}_${key.id}`;
-        const cachedMsg = messageCache.get(msgKey);
-        return cachedMsg?.message || undefined;
+      // reconnect if not logged out
+      if (shouldReconnect) {
+        // Add a small delay before reconnecting to avoid rate limiting
+        setTimeout(() => initializeBaileySocket(), 3000);
       }
-    });
+    } else if (connection === 'open') {
+      console.log('opened connection');
+    }
+  });
 
-    appLogger.info({}, '✅ Baileys socket created successfully');
+  // Save credentials when updated
+  sock.ev.on('creds.update', saveCreds);
 
-    // Handle connection updates
-    sock.ev.on('connection.update', (update) => {
-      const { connection, lastDisconnect, qr } = update;
+  // Handle messages (this will be used by webhook controller)
+  sock.ev.on('messages.upsert', ({ messages }) => {
+    for (const message of messages) {
+      // Cache message for getMessage functionality
+      const msgKey = `${message.key.remoteJid}_${message.key.id}`;
+      messageCache.set(msgKey, message);
 
-      if (qr) {
-        console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        console.log('📱 Scan this QR code with WhatsApp to connect:');
-        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-        qrcode.generate(qr, { small: true });
-        console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        appLogger.info({}, '✅ QR Code generated successfully');
-      }
-
-      if (connection === 'close') {
-        const shouldReconnect = (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
+      if (!message.key.fromMe) {
         appLogger.info({
-          error: lastDisconnect?.error,
-          shouldReconnect
-        }, 'Connection closed');
-
-        if (shouldReconnect) {
-          setTimeout(() => initializeBaileySocket(), 5000);
-        }
-      } else if (connection === 'open') {
-        appLogger.info({}, 'WhatsApp connection opened successfully');
+          messageId: message.key.id,
+          from: message.key.remoteJid,
+          type: getContentType(message.message)
+        }, 'Received message via Baileys');
       }
-    });
-
-    // Save credentials when updated
-    sock.ev.on('creds.update', saveCreds);
-
-    // Handle messages (this will be used by webhook controller)
-    sock.ev.on('messages.upsert', ({ messages }) => {
-      for (const message of messages) {
-        // Cache message for getMessage functionality
-        const msgKey = `${message.key.remoteJid}_${message.key.id}`;
-        messageCache.set(msgKey, message);
-
-        if (!message.key.fromMe) {
-          appLogger.info({
-            messageId: message.key.id,
-            from: message.key.remoteJid,
-            type: getContentType(message.message)
-          }, 'Received message via Baileys');
-        }
-      }
-    });
-
-  } catch (error) {
-    appLogger.error({
-      error,
-      errorMessage: error instanceof Error ? error.message : String(error),
-      errorStack: error instanceof Error ? error.stack : undefined,
-      errorName: error instanceof Error ? error.name : undefined
-    }, '❌ Failed to initialize Baileys socket');
-    throw error;
-  }
+    }
+  });
 }
 
 /**
@@ -249,7 +229,7 @@ export async function sendButtonMessage(
 export async function sendListMessage(
   to: string,
   bodyText: string,
-  buttonText: string,
+  _buttonText: string,
   sections: Array<{
     title: string;
     rows: Array<{ id: string; title: string; description?: string }>;
@@ -342,6 +322,7 @@ export async function downloadMedia(message: WAMessage, waId?: string): Promise<
       'buffer',
       {},
       {
+        logger,
         reuploadRequest: sock.updateMediaMessage
       }
     );

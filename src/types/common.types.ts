@@ -65,6 +65,7 @@ export interface ProcessedMessage {
   sessionId?: string;
   mediaUrl?: string;
   transcription?: TranscriptionResult;
+  baileysMessage?: any; // WAMessage from Baileys for media download
 }
 
 export type MessageContentType = 

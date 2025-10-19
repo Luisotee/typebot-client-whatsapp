@@ -175,6 +175,54 @@ export async function updateTypebotInSession(
 }
 
 /**
+ * Translates common Typebot error messages to Brazilian Portuguese
+ */
+function translateTypebotMessage(text: string): string {
+  const translations: Record<string, string> = {
+    'Invalid message. Please, try again.': 'Mensagem inválida. Por favor, tente novamente.',
+    'Invalid message.': 'Mensagem inválida.',
+    'Please, try again.': 'Por favor, tente novamente.',
+    'Please try again.': 'Por favor, tente novamente.',
+    'Invalid input.': 'Entrada inválida.',
+    'Invalid option.': 'Opção inválida.',
+    'Please select a valid option.': 'Por favor, selecione uma opção válida.',
+    'Please enter a valid value.': 'Por favor, insira um valor válido.',
+  };
+
+  // Check for exact match first
+  if (translations[text]) {
+    return translations[text];
+  }
+
+  // Check for partial matches (case insensitive)
+  const lowerText = text.toLowerCase();
+  for (const [english, portuguese] of Object.entries(translations)) {
+    if (lowerText.includes(english.toLowerCase())) {
+      return text.replace(new RegExp(english, 'gi'), portuguese);
+    }
+  }
+
+  return text;
+}
+
+/**
+ * Recursively extracts text from a rich text node and its children
+ */
+function extractTextFromNode(node: any): string {
+  // If node has direct text, return it
+  if (node.text) {
+    return node.text;
+  }
+
+  // If node has children, recursively extract text from them
+  if (node.children && Array.isArray(node.children)) {
+    return node.children.map((child: any) => extractTextFromNode(child)).join('');
+  }
+
+  return '';
+}
+
+/**
  * Extracts text content from Typebot rich text format
  */
 export function extractTextFromMessage(message: TypebotMessage): string {
@@ -183,17 +231,22 @@ export function extractTextFromMessage(message: TypebotMessage): string {
   }
 
   const extractedText = message.content.richText
-    .map((richText) => richText.children.map((child) => child.text || "").join(""))
+    .map((richText) => extractTextFromNode(richText))
     .join("\n")
     .trim();
-  
-  appLogger.info({ 
-    originalRichText: message.content.richText, 
+
+  // Translate common error messages to Portuguese
+  const translatedText = translateTypebotMessage(extractedText);
+
+  appLogger.info({
+    originalRichText: message.content.richText,
     extractedText,
-    extractedLength: extractedText.length 
+    translatedText,
+    wasTranslated: extractedText !== translatedText,
+    extractedLength: translatedText.length
   }, "🔍 Text extraction from Typebot message");
-  
-  return extractedText;
+
+  return translatedText;
 }
 
 /**
