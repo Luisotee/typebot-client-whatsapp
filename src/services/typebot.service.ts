@@ -242,7 +242,25 @@ export function extractTextFromMessage(message: TypebotMessage): string {
   }
 
   const extractedText = message.content.richText
-    .map((richText) => richText.children.map((child) => extractTextFromChild(child)).join(""))
+    .map((richText) => {
+      // Handle structured elements with children array (e.g., paragraphs)
+      if ('children' in richText && richText.children && Array.isArray(richText.children)) {
+        return richText.children.map((child) => extractTextFromChild(child)).join("");
+      }
+
+      // Handle direct text nodes at the top level (e.g., { bold: true, text: "..." })
+      if ('text' in richText && richText.text !== undefined) {
+        return extractTextFromChild(richText);
+      }
+
+      // Skip other types we don't recognize
+      appLogger.debug({
+        richTextStructure: richText,
+        hasChildren: 'children' in richText,
+        hasText: 'text' in richText
+      }, "⚠️  Skipping unrecognized richText element");
+      return "";
+    })
     .join("\n")
     .trim();
 

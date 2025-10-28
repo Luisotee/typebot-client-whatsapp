@@ -64,17 +64,19 @@ export interface TypebotMessageContent {
   alt?: string;
 }
 
-export interface TypebotRichText {
-  type: 'p' | 'inline-code' | 'a';
-  children: TypebotRichTextChild[];
-}
+// TypebotRichText can be either a structured element (with type and children)
+// or a direct text node (with text and formatting)
+export type TypebotRichText =
+  | { type: 'p' | 'inline-code' | 'a'; children: TypebotRichTextChild[] }
+  | TypebotRichTextChild;
 
 export interface TypebotRichTextChild {
-  text: string;
+  text?: string;
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
   url?: string;
+  children?: TypebotRichTextChild[]; // For nested structures like inline-variable
 }
 
 export interface TypebotInput {
