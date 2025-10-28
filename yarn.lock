@@ -1119,9 +1119,9 @@ keyv@^5.5.2:
   dependencies:
     "@keyv/serialize" "^1.1.1"
 
-"libsignal@git+https://github.com/whiskeysockets/libsignal-node.git":
+"libsignal@git+https://github.com/whiskeysockets/libsignal-node":
   version "2.0.1"
-  resolved "git+https://github.com/whiskeysockets/libsignal-node.git#e81ecfc32eb74951d789ab37f7e341ab66d5fff1"
+  resolved "git+https://github.com/whiskeysockets/libsignal-node#e81ecfc32eb74951d789ab37f7e341ab66d5fff1"
   dependencies:
     curve25519-js "^0.0.4"
     protobufjs "6.8.8"

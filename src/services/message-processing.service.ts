@@ -25,6 +25,7 @@ import {
 } from "./typebot.service";
 import { transcribeAudio } from "./transcription.service";
 import { enhanceTranscriptionWithChoiceMatch } from "./choice-matcher.service";
+import { uploadFileToTypebot, detectMimeType } from "./file-upload.service";
 import {
   getOrCreateUser,
   storeMessage,
@@ -182,6 +183,7 @@ export async function processMessage(
     // Step 5: Process message content
     let finalContent = message.content;
     let shouldSendToTypebot = true;
+    let fileUrls: string[] | undefined = undefined;
 
     if (message.type === "audio" && message.mediaUrl) {
       const audioResult = await processAudioMessage(message);
@@ -195,6 +197,54 @@ export async function processMessage(
       } else {
         finalContent = "Sorry, I couldn't process your audio message.";
         shouldSendToTypebot = false;
+      }
+    } else if (message.type === "image" && (message.mediaUrl || message.baileysMessage)) {
+      // Get or create a session first to have a session ID for upload
+      const activeSessionId = await getActiveSessionId(prisma, message.waId);
+
+      if (activeSessionId) {
+        const imageResult = await processImageMessage(message, activeSessionId);
+        if (imageResult.success && imageResult.data) {
+          fileUrls = [imageResult.data.fileUrl];
+          finalContent = message.content || "📸 Image uploaded";
+          shouldSendToTypebot = imageResult.data.shouldSendToTypebot;
+        } else {
+          finalContent = "Sorry, I couldn't process your image.";
+          shouldSendToTypebot = false;
+          appLogger.error({
+            waId: message.waId,
+            error: imageResult.error
+          }, 'Failed to process image message');
+        }
+      } else {
+        // No active session - need to start a new chat first
+        appLogger.info({
+          waId: message.waId,
+        }, 'No active session for image upload, starting new chat first');
+
+        const startResult = await startChat({}, message.waId, undefined, prisma);
+        if (startResult.success && startResult.data) {
+          const newSessionId = startResult.data.sessionId;
+
+          // Now process the image with the new session
+          const imageResult = await processImageMessage(message, newSessionId);
+          if (imageResult.success && imageResult.data) {
+            fileUrls = [imageResult.data.fileUrl];
+            finalContent = message.content || "📸 Image uploaded";
+            shouldSendToTypebot = imageResult.data.shouldSendToTypebot;
+            message.sessionId = newSessionId; // Use the new session
+          } else {
+            finalContent = "Sorry, I couldn't process your image.";
+            shouldSendToTypebot = false;
+            appLogger.error({
+              waId: message.waId,
+              error: imageResult.error
+            }, 'Failed to process image message after creating session');
+          }
+        } else {
+          finalContent = "Sorry, I couldn't start a conversation to upload your image.";
+          shouldSendToTypebot = false;
+        }
       }
     } else if (message.type === "text") {
       // Check for numeric choice selection (e.g., "1", "2", "3")
@@ -218,7 +268,8 @@ export async function processMessage(
         prisma,
         finalContent,
         message.sessionId,
-        message.waId
+        message.waId,
+        fileUrls
       );
 
       if (typebotResult.success && typebotResult.data) {
@@ -403,13 +454,131 @@ async function processAudioMessage(message: ProcessedMessage): Promise<
 }
 
 /**
+ * Processes image messages with upload to Typebot storage
+ */
+async function processImageMessage(
+  message: ProcessedMessage,
+  sessionId?: string
+): Promise<
+  ServiceResponse<{
+    fileUrl: string;
+    shouldSendToTypebot: boolean;
+  }>
+> {
+  const context = {
+    waId: message.waId,
+    messageId: message.id,
+    sessionId,
+    operation: "process_image",
+  };
+
+  try {
+    if (!message.mediaUrl && !message.baileysMessage) {
+      return { success: false, error: "No media URL or Baileys message provided" };
+    }
+
+    if (!sessionId) {
+      return {
+        success: false,
+        error: "Session ID required for file upload"
+      };
+    }
+
+    appLogger.info(context, "📸 Processing image message for upload to Typebot");
+
+    // Download image - use baileysMessage if available (for Baileys mode), otherwise use mediaUrl (for Meta mode)
+    const downloadTarget = message.baileysMessage || message.mediaUrl;
+    const downloadResult = await downloadMedia(downloadTarget, message.waId);
+
+    if (!downloadResult.success || !downloadResult.data) {
+      appLogger.error({
+        ...context,
+        error: downloadResult.error,
+        hasBaileysMessage: !!message.baileysMessage,
+        hasMediaUrl: !!message.mediaUrl
+      }, 'Failed to download image');
+      return {
+        success: false,
+        error: `Failed to download image: ${downloadResult.error}`,
+      };
+    }
+
+    const imageBuffer = downloadResult.data;
+
+    // Detect MIME type
+    const mimeType = detectMimeType(imageBuffer, `image_${message.id}`);
+    const fileExtension = mimeType.split("/")[1] || "jpg";
+    const fileName = `whatsapp_image_${message.id}.${fileExtension}`;
+
+    appLogger.info(
+      {
+        ...context,
+        fileName,
+        mimeType,
+        fileSize: imageBuffer.length,
+      },
+      "Uploading image to Typebot storage"
+    );
+
+    // Upload to Typebot storage
+    const uploadResult = await uploadFileToTypebot(
+      sessionId,
+      imageBuffer,
+      fileName,
+      mimeType,
+      message.waId
+    );
+
+    if (!uploadResult.success || !uploadResult.data) {
+      appLogger.error({
+        ...context,
+        error: uploadResult.error
+      }, 'Failed to upload image to Typebot');
+      return {
+        success: false,
+        error: `Failed to upload image: ${uploadResult.error}`,
+      };
+    }
+
+    const fileUrl = uploadResult.data;
+
+    appLogger.info(
+      {
+        ...context,
+        fileUrl,
+      },
+      "✅ Successfully uploaded image to Typebot storage"
+    );
+
+    return {
+      success: true,
+      data: {
+        fileUrl,
+        shouldSendToTypebot: true,
+      },
+    };
+  } catch (error) {
+    appLogger.error(
+      context,
+      "Error processing image message",
+      error instanceof Error ? error : new Error(String(error))
+    );
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
  * Interacts with Typebot API
  */
 async function interactWithTypebot(
   prisma: PrismaClient,
   content: string,
   sessionId?: string,
-  waId?: string
+  waId?: string,
+  fileUrls?: string[]
 ): Promise<ServiceResponse<any>> {
   const activeTypebotId = waId ? await getActiveTypebotId(prisma, waId) : null;
   const activeSessionId = waId ? await getActiveSessionId(prisma, waId) : null;
@@ -455,9 +624,27 @@ async function interactWithTypebot(
 
     if (effectiveSessionId && isValidSessionId(effectiveSessionId)) {
       // Try to continue existing conversation
+      // Build message payload based on whether we have files or not
+      let messagePayload: string | any = content;
+
+      if (fileUrls && fileUrls.length > 0) {
+        // For file upload blocks: send the URL directly as plain text
+        // (attachedFileUrls only works with text inputs that have "Allow attachments" enabled)
+        messagePayload = fileUrls[0];
+
+        appLogger.info(
+          {
+            ...context,
+            fileUrl: fileUrls[0],
+            originalContent: content,
+          },
+          "📎 Sending file URL as message content for file upload block"
+        );
+      }
+
       const continueResult = await continueChat(
         {
-          message: content,
+          message: messagePayload,
           sessionId: effectiveSessionId,
         },
         waId

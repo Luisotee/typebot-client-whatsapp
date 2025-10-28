@@ -139,9 +139,17 @@ export function convertToProcessedMessage(
   } else if (whatsappMessage.image) {
     content = whatsappMessage.image.caption || '[Image]';
     mediaUrl = whatsappMessage.image.id;
+    // For Baileys image messages, store the raw message for download
+    if (whatsappMessage.baileys?.rawMessage) {
+      baileysMessage = whatsappMessage.baileys.rawMessage;
+    }
   } else if (whatsappMessage.video) {
     content = whatsappMessage.video.caption || '[Video]';
     mediaUrl = whatsappMessage.video.id;
+    // For Baileys video messages, store the raw message for download
+    if (whatsappMessage.baileys?.rawMessage) {
+      baileysMessage = whatsappMessage.baileys.rawMessage;
+    }
   } else if (whatsappMessage.audio) {
     content = '[Audio]';
     mediaUrl = whatsappMessage.audio.id;
@@ -152,6 +160,10 @@ export function convertToProcessedMessage(
   } else if (whatsappMessage.document) {
     content = whatsappMessage.document.caption || '[Document]';
     mediaUrl = whatsappMessage.document.id;
+    // For Baileys document messages, store the raw message for download
+    if (whatsappMessage.baileys?.rawMessage) {
+      baileysMessage = whatsappMessage.baileys.rawMessage;
+    }
   } else if (whatsappMessage.interactive) {
     if (whatsappMessage.interactive.button_reply) {
       content = whatsappMessage.interactive.button_reply.title;

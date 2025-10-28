@@ -14,8 +14,14 @@ export interface TypebotStartChatResponse {
 }
 
 export interface TypebotContinueChatRequest {
-  message?: string;
+  message?: string | TypebotMessagePayload;
   sessionId: string;
+}
+
+export interface TypebotMessagePayload {
+  type?: string;
+  text?: string;
+  attachedFileUrls?: string[];
 }
 
 export interface TypebotContinueChatResponse {

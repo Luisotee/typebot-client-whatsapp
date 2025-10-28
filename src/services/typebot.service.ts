@@ -121,17 +121,19 @@ export async function continueChat(
   };
   const endpoint = `${typebot.apiBase}/sessions/${request.sessionId}/continueChat`;
 
+  const requestBody: any = { message: request.message };
+
   appLogger.typebotApiCall({
     ...context,
     endpoint: `/sessions/${request.sessionId}/continueChat`,
     method: "POST",
-    requestBody: { message: request.message },
+    requestBody,
   });
 
   return withServiceResponse(async () => {
     const response = await makeApiCall<TypebotContinueChatResponse>(endpoint, {
       method: "POST",
-      body: JSON.stringify({ message: request.message }),
+      body: JSON.stringify(requestBody),
     });
 
     appLogger.typebotApiSuccess({
