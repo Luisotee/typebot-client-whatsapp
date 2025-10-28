@@ -36,6 +36,8 @@ import {
   getActiveSessionId,
   getActiveTypebotId,
   setActiveTypebotId,
+  setExpectedInputType,
+  getExpectedInputType,
 } from "./session.service";
 import { typebot, whitelist } from "../config/config";
 import { handleCommand } from "./command-handler.service";
@@ -185,18 +187,82 @@ export async function processMessage(
     let shouldSendToTypebot = true;
     let fileUrls: string[] | undefined = undefined;
 
-    if (message.type === "audio" && message.mediaUrl) {
-      const audioResult = await processAudioMessage(message);
-      if (audioResult.success && audioResult.data) {
-        finalContent = audioResult.data.finalContent;
-        shouldSendToTypebot = audioResult.data.shouldSendToTypebot;
+    if (message.type === "audio" && (message.mediaUrl || message.baileysMessage)) {
+      // Check expected input type to decide: upload file or transcribe
+      const expectedInputType = getExpectedInputType(message.waId);
 
-        if (audioResult.data.transcription) {
-          message.transcription = audioResult.data.transcription;
+      appLogger.info({
+        waId: message.waId,
+        expectedInputType,
+        hasExpectedType: !!expectedInputType
+      }, '🎯 Checking expected input type for audio handling');
+
+      if (expectedInputType === "file input") {
+        // Upload audio file to Typebot storage
+        appLogger.info({ waId: message.waId }, '📎 Audio file mode: uploading to storage');
+
+        const activeSessionId = await getActiveSessionId(prisma, message.waId);
+
+        if (activeSessionId) {
+          const audioFileResult = await processAudioFileMessage(message, activeSessionId);
+          if (audioFileResult.success && audioFileResult.data) {
+            fileUrls = [audioFileResult.data.fileUrl];
+            finalContent = message.content || "🎤 Audio uploaded";
+            shouldSendToTypebot = audioFileResult.data.shouldSendToTypebot;
+          } else {
+            finalContent = "Sorry, I couldn't process your audio file.";
+            shouldSendToTypebot = false;
+            appLogger.error({
+              waId: message.waId,
+              error: audioFileResult.error
+            }, 'Failed to process audio file message');
+          }
+        } else {
+          // No active session - need to start a new chat first
+          appLogger.info({
+            waId: message.waId,
+          }, 'No active session for audio upload, starting new chat first');
+
+          const startResult = await startChat({}, message.waId, undefined, prisma);
+          if (startResult.success && startResult.data) {
+            const newSessionId = startResult.data.sessionId;
+
+            // Now process the audio with the new session
+            const audioFileResult = await processAudioFileMessage(message, newSessionId);
+            if (audioFileResult.success && audioFileResult.data) {
+              fileUrls = [audioFileResult.data.fileUrl];
+              finalContent = message.content || "🎤 Audio uploaded";
+              shouldSendToTypebot = audioFileResult.data.shouldSendToTypebot;
+              message.sessionId = newSessionId; // Use the new session
+            } else {
+              finalContent = "Sorry, I couldn't process your audio file.";
+              shouldSendToTypebot = false;
+              appLogger.error({
+                waId: message.waId,
+                error: audioFileResult.error
+              }, 'Failed to process audio file message after creating session');
+            }
+          } else {
+            finalContent = "Sorry, I couldn't start a conversation to upload your audio.";
+            shouldSendToTypebot = false;
+          }
         }
       } else {
-        finalContent = "Sorry, I couldn't process your audio message.";
-        shouldSendToTypebot = false;
+        // Default: Transcribe audio (for text inputs or when no expected type)
+        appLogger.info({ waId: message.waId }, '🎙️ Audio transcription mode: transcribing');
+
+        const audioResult = await processAudioMessage(message);
+        if (audioResult.success && audioResult.data) {
+          finalContent = audioResult.data.finalContent;
+          shouldSendToTypebot = audioResult.data.shouldSendToTypebot;
+
+          if (audioResult.data.transcription) {
+            message.transcription = audioResult.data.transcription;
+          }
+        } else {
+          finalContent = "Sorry, I couldn't process your audio message.";
+          shouldSendToTypebot = false;
+        }
       }
     } else if (message.type === "image" && (message.mediaUrl || message.baileysMessage)) {
       // Get or create a session first to have a session ID for upload
@@ -736,6 +802,123 @@ async function processVideoMessage(
 }
 
 /**
+ * Processes audio messages as file uploads (not transcription)
+ */
+async function processAudioFileMessage(
+  message: ProcessedMessage,
+  sessionId?: string
+): Promise<
+  ServiceResponse<{
+    fileUrl: string;
+    shouldSendToTypebot: boolean;
+  }>
+> {
+  const context = {
+    waId: message.waId,
+    messageId: message.id,
+    sessionId,
+    operation: "process_audio_file",
+  };
+
+  try {
+    if (!message.mediaUrl && !message.baileysMessage) {
+      return { success: false, error: "No media URL or Baileys message provided" };
+    }
+
+    if (!sessionId) {
+      return {
+        success: false,
+        error: "Session ID required for file upload"
+      };
+    }
+
+    appLogger.info(context, "🎤 Processing audio message for upload to Typebot (file mode)");
+
+    // Download audio - use baileysMessage if available (for Baileys mode), otherwise use mediaUrl (for Meta mode)
+    const downloadTarget = message.baileysMessage || message.mediaUrl;
+    const downloadResult = await downloadMedia(downloadTarget, message.waId);
+
+    if (!downloadResult.success || !downloadResult.data) {
+      appLogger.error({
+        ...context,
+        error: downloadResult.error,
+        hasBaileysMessage: !!message.baileysMessage,
+        hasMediaUrl: !!message.mediaUrl
+      }, 'Failed to download audio');
+      return {
+        success: false,
+        error: `Failed to download audio: ${downloadResult.error}`,
+      };
+    }
+
+    const audioBuffer = downloadResult.data;
+
+    // Detect MIME type
+    const mimeType = detectMimeType(audioBuffer, `audio_${message.id}`);
+    const fileExtension = mimeType.split("/")[1] || "ogg";
+    const fileName = `whatsapp_audio_${message.id}.${fileExtension}`;
+
+    appLogger.info(
+      {
+        ...context,
+        fileName,
+        mimeType,
+        fileSize: audioBuffer.length,
+      },
+      "Uploading audio to Typebot storage"
+    );
+
+    // Upload to Typebot storage
+    const uploadResult = await uploadFileToTypebot(
+      sessionId,
+      audioBuffer,
+      fileName,
+      mimeType,
+      message.waId
+    );
+
+    if (!uploadResult.success || !uploadResult.data) {
+      appLogger.error({
+        ...context,
+        error: uploadResult.error
+      }, 'Failed to upload audio to Typebot');
+      return {
+        success: false,
+        error: `Failed to upload audio: ${uploadResult.error}`,
+      };
+    }
+
+    const fileUrl = uploadResult.data;
+
+    appLogger.info(
+      {
+        ...context,
+        fileUrl,
+      },
+      "✅ Successfully uploaded audio to Typebot storage"
+    );
+
+    return {
+      success: true,
+      data: {
+        fileUrl,
+        shouldSendToTypebot: true,
+      },
+    };
+  } catch (error) {
+    appLogger.error(
+      context,
+      "Error processing audio file message",
+      error instanceof Error ? error : new Error(String(error))
+    );
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
  * Interacts with Typebot API
  */
 async function interactWithTypebot(
@@ -960,6 +1143,22 @@ async function sendTypebotResponse(
     // Handle input/choices
     if (typebotResponse.input) {
       await handleTypebotInput(typebotResponse.input, typebotResponse.sessionId, waId);
+
+      // Store expected input type for audio handling decision
+      setExpectedInputType(waId, typebotResponse.input.type);
+
+      appLogger.info({
+        waId,
+        inputType: typebotResponse.input.type,
+        inputId: typebotResponse.input.id,
+        sessionId: typebotResponse.sessionId
+      }, '📝 Stored expected input type for audio handling');
+    } else {
+      appLogger.info({
+        waId,
+        sessionId: typebotResponse.sessionId,
+        hasMessages: !!(typebotResponse.messages && typebotResponse.messages.length > 0)
+      }, '⚠️ No input in Typebot response - expected input type not stored');
     }
   } catch (error) {
     appLogger.error(

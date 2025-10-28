@@ -289,6 +289,41 @@ export function detectMimeType(buffer: Buffer, fileName?: string): string {
     return "video/mp4";
   }
 
+  // Check for audio formats
+  // OGG audio (OggS signature)
+  if (
+    buffer.length >= 4 &&
+    buffer[0] === 0x4f &&
+    buffer[1] === 0x67 &&
+    buffer[2] === 0x67 &&
+    buffer[3] === 0x53
+  ) {
+    return "audio/ogg";
+  }
+
+  // MP3 audio (ID3 or MPEG audio frame sync)
+  if (
+    (buffer.length >= 3 && buffer[0] === 0x49 && buffer[1] === 0x44 && buffer[2] === 0x33) || // ID3v2
+    (buffer.length >= 2 && buffer[0] === 0xff && (buffer[1] & 0xe0) === 0xe0) // MPEG frame sync
+  ) {
+    return "audio/mpeg";
+  }
+
+  // RIFF audio (WAV, but could be other RIFF audio)
+  if (
+    buffer.length >= 12 &&
+    buffer[0] === 0x52 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x46 &&
+    buffer[8] === 0x57 &&
+    buffer[9] === 0x41 &&
+    buffer[10] === 0x56 &&
+    buffer[11] === 0x45
+  ) {
+    return "audio/wav";
+  }
+
   // Fallback to filename extension
   if (fileName) {
     const ext = fileName.toLowerCase().split(".").pop();
@@ -305,6 +340,18 @@ export function detectMimeType(buffer: Buffer, fileName?: string): string {
       case "mp4":
       case "m4v":
         return "video/mp4";
+      case "ogg":
+      case "opus":
+        return "audio/ogg";
+      case "mp3":
+        return "audio/mpeg";
+      case "m4a":
+      case "aac":
+        return "audio/mp4";
+      case "wav":
+        return "audio/wav";
+      case "webm":
+        return "audio/webm";
       case "pdf":
         return "application/pdf";
       default:

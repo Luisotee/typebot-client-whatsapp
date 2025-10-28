@@ -12,6 +12,12 @@ const activeChoiceSessions = new Map<string, {
   currentTypebotSlug?: string; // Track active typebot slug (for API calls)
 }>();
 
+// Expected input types stored in memory (for audio upload vs transcription decision)
+const expectedInputTypes = new Map<string, {
+  inputType: string;
+  timestamp: Date;
+}>();
+
 /**
  * Initialize session management with automatic cleanup
  */
@@ -19,17 +25,27 @@ export function initializeSessionManagement(): void {
   // Clean up old choice sessions every 5 minutes
   setInterval(() => {
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
-    let cleanedCount = 0;
+    let cleanedChoices = 0;
+    let cleanedInputTypes = 0;
 
+    // Clean up expired choice sessions
     for (const [waId, session] of activeChoiceSessions.entries()) {
       if (session.timestamp < fiveMinutesAgo) {
         activeChoiceSessions.delete(waId);
-        cleanedCount++;
+        cleanedChoices++;
       }
     }
 
-    if (cleanedCount > 0) {
-      appLogger.debug({ cleanedCount }, 'Cleaned up expired choice sessions');
+    // Clean up expired expected input types
+    for (const [waId, inputType] of expectedInputTypes.entries()) {
+      if (inputType.timestamp < fiveMinutesAgo) {
+        expectedInputTypes.delete(waId);
+        cleanedInputTypes++;
+      }
+    }
+
+    if (cleanedChoices > 0 || cleanedInputTypes > 0) {
+      appLogger.debug({ cleanedChoices, cleanedInputTypes }, 'Cleaned up expired sessions');
     }
   }, 5 * 60 * 1000);
 }
@@ -223,8 +239,59 @@ export function clearActiveChoices(waId: string): void {
   const session = activeChoiceSessions.get(waId);
   if (session) {
     activeChoiceSessions.delete(waId);
-    appLogger.debug({ waId, sessionId: session.sessionId }, 
+    appLogger.debug({ waId, sessionId: session.sessionId },
       'Active choices cleared');
+  }
+}
+
+/**
+ * Sets expected input type for audio handling decision
+ */
+export function setExpectedInputType(waId: string, inputType: string): void {
+  expectedInputTypes.set(waId, {
+    inputType,
+    timestamp: new Date()
+  });
+
+  appLogger.info({ waId, inputType },
+    '💾 Expected input type set for user');
+}
+
+/**
+ * Gets expected input type for audio handling decision
+ */
+export function getExpectedInputType(waId: string): string | null {
+  const entry = expectedInputTypes.get(waId);
+
+  if (!entry) {
+    appLogger.info({ waId },
+      '🔍 No expected input type found for user');
+    return null;
+  }
+
+  // Check if entry is too old (30 minutes)
+  const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+  if (entry.timestamp < thirtyMinutesAgo) {
+    expectedInputTypes.delete(waId);
+    appLogger.info({ waId, inputType: entry.inputType },
+      '⏰ Expected input type expired and removed');
+    return null;
+  }
+
+  appLogger.info({ waId, inputType: entry.inputType },
+    '✅ Retrieved expected input type for user');
+  return entry.inputType;
+}
+
+/**
+ * Clears expected input type for a user
+ */
+export function clearExpectedInputType(waId: string): void {
+  const entry = expectedInputTypes.get(waId);
+  if (entry) {
+    expectedInputTypes.delete(waId);
+    appLogger.debug({ waId, inputType: entry.inputType },
+      'Expected input type cleared');
   }
 }
 
