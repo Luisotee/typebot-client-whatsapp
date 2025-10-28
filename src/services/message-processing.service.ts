@@ -246,6 +246,54 @@ export async function processMessage(
           shouldSendToTypebot = false;
         }
       }
+    } else if (message.type === "video" && (message.mediaUrl || message.baileysMessage)) {
+      // Get or create a session first to have a session ID for upload
+      const activeSessionId = await getActiveSessionId(prisma, message.waId);
+
+      if (activeSessionId) {
+        const videoResult = await processVideoMessage(message, activeSessionId);
+        if (videoResult.success && videoResult.data) {
+          fileUrls = [videoResult.data.fileUrl];
+          finalContent = message.content || "🎬 Video uploaded";
+          shouldSendToTypebot = videoResult.data.shouldSendToTypebot;
+        } else {
+          finalContent = "Sorry, I couldn't process your video.";
+          shouldSendToTypebot = false;
+          appLogger.error({
+            waId: message.waId,
+            error: videoResult.error
+          }, 'Failed to process video message');
+        }
+      } else {
+        // No active session - need to start a new chat first
+        appLogger.info({
+          waId: message.waId,
+        }, 'No active session for video upload, starting new chat first');
+
+        const startResult = await startChat({}, message.waId, undefined, prisma);
+        if (startResult.success && startResult.data) {
+          const newSessionId = startResult.data.sessionId;
+
+          // Now process the video with the new session
+          const videoResult = await processVideoMessage(message, newSessionId);
+          if (videoResult.success && videoResult.data) {
+            fileUrls = [videoResult.data.fileUrl];
+            finalContent = message.content || "🎬 Video uploaded";
+            shouldSendToTypebot = videoResult.data.shouldSendToTypebot;
+            message.sessionId = newSessionId; // Use the new session
+          } else {
+            finalContent = "Sorry, I couldn't process your video.";
+            shouldSendToTypebot = false;
+            appLogger.error({
+              waId: message.waId,
+              error: videoResult.error
+            }, 'Failed to process video message after creating session');
+          }
+        } else {
+          finalContent = "Sorry, I couldn't start a conversation to upload your video.";
+          shouldSendToTypebot = false;
+        }
+      }
     } else if (message.type === "text") {
       // Check for numeric choice selection (e.g., "1", "2", "3")
       const numericResult = processNumericChoice(message.content, message.waId);
@@ -561,6 +609,123 @@ async function processImageMessage(
     appLogger.error(
       context,
       "Error processing image message",
+      error instanceof Error ? error : new Error(String(error))
+    );
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Processes video messages with upload to Typebot storage
+ */
+async function processVideoMessage(
+  message: ProcessedMessage,
+  sessionId?: string
+): Promise<
+  ServiceResponse<{
+    fileUrl: string;
+    shouldSendToTypebot: boolean;
+  }>
+> {
+  const context = {
+    waId: message.waId,
+    messageId: message.id,
+    sessionId,
+    operation: "process_video",
+  };
+
+  try {
+    if (!message.mediaUrl && !message.baileysMessage) {
+      return { success: false, error: "No media URL or Baileys message provided" };
+    }
+
+    if (!sessionId) {
+      return {
+        success: false,
+        error: "Session ID required for file upload"
+      };
+    }
+
+    appLogger.info(context, "🎬 Processing video message for upload to Typebot");
+
+    // Download video - use baileysMessage if available (for Baileys mode), otherwise use mediaUrl (for Meta mode)
+    const downloadTarget = message.baileysMessage || message.mediaUrl;
+    const downloadResult = await downloadMedia(downloadTarget, message.waId);
+
+    if (!downloadResult.success || !downloadResult.data) {
+      appLogger.error({
+        ...context,
+        error: downloadResult.error,
+        hasBaileysMessage: !!message.baileysMessage,
+        hasMediaUrl: !!message.mediaUrl
+      }, 'Failed to download video');
+      return {
+        success: false,
+        error: `Failed to download video: ${downloadResult.error}`,
+      };
+    }
+
+    const videoBuffer = downloadResult.data;
+
+    // Detect MIME type
+    const mimeType = detectMimeType(videoBuffer, `video_${message.id}`);
+    const fileExtension = mimeType.split("/")[1] || "mp4";
+    const fileName = `whatsapp_video_${message.id}.${fileExtension}`;
+
+    appLogger.info(
+      {
+        ...context,
+        fileName,
+        mimeType,
+        fileSize: videoBuffer.length,
+      },
+      "Uploading video to Typebot storage"
+    );
+
+    // Upload to Typebot storage
+    const uploadResult = await uploadFileToTypebot(
+      sessionId,
+      videoBuffer,
+      fileName,
+      mimeType,
+      message.waId
+    );
+
+    if (!uploadResult.success || !uploadResult.data) {
+      appLogger.error({
+        ...context,
+        error: uploadResult.error
+      }, 'Failed to upload video to Typebot');
+      return {
+        success: false,
+        error: `Failed to upload video: ${uploadResult.error}`,
+      };
+    }
+
+    const fileUrl = uploadResult.data;
+
+    appLogger.info(
+      {
+        ...context,
+        fileUrl,
+      },
+      "✅ Successfully uploaded video to Typebot storage"
+    );
+
+    return {
+      success: true,
+      data: {
+        fileUrl,
+        shouldSendToTypebot: true,
+      },
+    };
+  } catch (error) {
+    appLogger.error(
+      context,
+      "Error processing video message",
       error instanceof Error ? error : new Error(String(error))
     );
     return {

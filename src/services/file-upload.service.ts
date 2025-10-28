@@ -278,6 +278,17 @@ export function detectMimeType(buffer: Buffer, fileName?: string): string {
     return "image/webp";
   }
 
+  // Check for MP4/video formats (ftyp signature at bytes 4-7)
+  if (
+    buffer.length >= 12 &&
+    buffer[4] === 0x66 &&
+    buffer[5] === 0x74 &&
+    buffer[6] === 0x79 &&
+    buffer[7] === 0x70
+  ) {
+    return "video/mp4";
+  }
+
   // Fallback to filename extension
   if (fileName) {
     const ext = fileName.toLowerCase().split(".").pop();
@@ -291,6 +302,9 @@ export function detectMimeType(buffer: Buffer, fileName?: string): string {
         return "image/gif";
       case "webp":
         return "image/webp";
+      case "mp4":
+      case "m4v":
+        return "video/mp4";
       case "pdf":
         return "application/pdf";
       default:
