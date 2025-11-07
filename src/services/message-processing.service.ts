@@ -76,19 +76,47 @@ export async function processMessage(
 
 
   try {
-    // Step 1: Check whitelist first (before processing anything)
+    // Step 1: Get or create user (needed for rejection tracking)
+    const userResult = await getOrCreateUser(prisma, message.waId);
+    if (!userResult.success || !userResult.data) {
+      throw new Error(`Failed to get/create user: ${userResult.error}`);
+    }
+    const { userId, user } = userResult.data;
+
+    // Step 2: Check whitelist (before processing anything)
     if (whitelist.enabled) {
       const allowed = await isWhitelisted(message.waId);
 
       if (!allowed) {
-        appLogger.warn({ waId: message.waId }, 'User not in whitelist, message rejected');
+        // Check if we've notified this user recently (within 24 hours)
+        const now = new Date();
+        const lastNotified = user.lastRejectionNotifiedAt;
+        const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
-        // Send a polite rejection message
-        await sendTextMessage(
-          message.waId,
-          '⚠️ Desculpe, mas você não tem permissão para usar este bot. Entre em contato com o administrador.'
-        );
-        await sendErrorReaction(message.waId, message.id);
+        const shouldNotify = !lastNotified || lastNotified < twentyFourHoursAgo;
+
+        if (shouldNotify) {
+          appLogger.warn({ waId: message.waId }, 'User not in whitelist, sending rejection message');
+
+          // Send a polite rejection message
+          await sendTextMessage(
+            message.waId,
+            '⚠️ Desculpe, mas você não tem permissão para usar este bot. Entre em contato com o administrador.'
+          );
+          await sendErrorReaction(message.waId, message.id);
+
+          // Update the last notification timestamp
+          await prisma.user.update({
+            where: { id: userId },
+            data: { lastRejectionNotifiedAt: now }
+          });
+        } else {
+          appLogger.warn({
+            waId: message.waId,
+            lastNotified
+          }, 'User not in whitelist, silently rejecting (already notified within 24h)');
+        }
+
         return;
       }
     }
@@ -116,15 +144,7 @@ export async function processMessage(
       }
     }
 
-    // Step 3: Get or create user
-    const userResult = await getOrCreateUser(prisma, message.waId);
-    if (!userResult.success || !userResult.data) {
-      throw new Error(`Failed to get/create user: ${userResult.error}`);
-    }
-
-    const { userId } = userResult.data;
-
-    // Step 2: Store incoming message
+    // Step 3: Store incoming message
     await storeMessage(
       prisma,
       userId,

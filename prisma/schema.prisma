@@ -8,14 +8,15 @@ datasource db {
 }
 
 model User {
-  id               Int       @id @default(autoincrement())
-  waId             String    @unique
-  name             String?
-  activeTypebotSlug String?   // Current active typebot slug for this user
-  activeSessionId  String?   // Current active session ID
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
-  messages         Message[]
+  id                       Int       @id @default(autoincrement())
+  waId                     String    @unique
+  name                     String?
+  activeTypebotSlug        String?   // Current active typebot slug for this user
+  activeSessionId          String?   // Current active session ID
+  lastRejectionNotifiedAt  DateTime? // Track when user was last notified of rejection
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+  messages                 Message[]
 }
 
 model Message {

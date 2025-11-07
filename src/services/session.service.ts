@@ -53,7 +53,7 @@ export function initializeSessionManagement(): void {
 /**
  * Gets or creates a user session
  */
-export async function getOrCreateUser(prisma: PrismaClient, waId: string, name?: string): Promise<ServiceResponse<{ userId: number; isNew: boolean }>> {
+export async function getOrCreateUser(prisma: PrismaClient, waId: string, name?: string): Promise<ServiceResponse<{ userId: number; isNew: boolean; user: any }>> {
   const context = { waId, operation: 'get_or_create_user' };
 
   if (!isValidWhatsAppId(waId)) {
@@ -95,7 +95,7 @@ export async function getOrCreateUser(prisma: PrismaClient, waId: string, name?:
       appLogger.sessionResumed({ ...context, lastActivity: user.updatedAt });
     }
 
-    return { userId: user.id, isNew };
+    return { userId: user.id, isNew, user };
   }, context);
 }
 
