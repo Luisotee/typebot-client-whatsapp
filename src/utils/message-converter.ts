@@ -1,8 +1,92 @@
 import { WAMessage, getContentType } from '@whiskeysockets/baileys';
 import { WhatsAppMessage, WhatsAppMessageType } from '../types/whatsapp.types';
-import { BaileysIncomingMessage } from '../types/baileys.types';
 import { ProcessedMessage } from '../types/common.types';
 import { appLogger } from './logger';
+
+/**
+ * Extracts phone number from Baileys WAMessage, handling both @lid and @s.whatsapp.net formats
+ */
+function extractPhoneNumber(baileysMessage: WAMessage): string {
+  const remoteJid = baileysMessage.key.remoteJid || '';
+  const isLid = remoteJid.includes('@lid');
+
+  // If it's a LID, try to extract the real phone number from alternative fields
+  if (isLid) {
+    const messageObj = baileysMessage as any;
+    const key = baileysMessage.key as any;
+
+    appLogger.debug({
+      remoteJid,
+      remoteJidAlt: key.remoteJidAlt,
+      participantAlt: key.participantAlt,
+      participant: key.participant,
+      pushName: messageObj.pushName,
+      keyKeys: Object.keys(baileysMessage.key)
+    }, '🔍 LID detected, attempting to extract real phone number');
+
+    // Try to extract from various fields in priority order:
+
+    // 1. Check for remoteJidAlt field - Baileys populates this with the real phone number when primary JID is LID
+    const remoteJidAlt = key.remoteJidAlt;
+    if (remoteJidAlt && typeof remoteJidAlt === 'string') {
+      // remoteJidAlt should be in format like "5515988203928@s.whatsapp.net"
+      const phoneNumber = remoteJidAlt.replace(/@.*$/, '');
+      if (phoneNumber && phoneNumber.length > 5 && !phoneNumber.includes('@lid')) {
+        appLogger.info({
+          lid: remoteJid.replace(/@.*$/, ''),
+          phoneNumber,
+          source: 'remoteJidAlt'
+        }, '✅ Extracted phone number from remoteJidAlt field');
+        return phoneNumber;
+      }
+    }
+
+    // 2. Check for participantAlt field (alternative for group messages)
+    const participantAlt = key.participantAlt;
+    if (participantAlt && typeof participantAlt === 'string') {
+      const phoneNumber = participantAlt.replace(/@.*$/, '');
+      if (phoneNumber && phoneNumber.length > 5 && !phoneNumber.includes('@lid')) {
+        appLogger.info({
+          lid: remoteJid.replace(/@.*$/, ''),
+          phoneNumber,
+          source: 'participantAlt'
+        }, '✅ Extracted phone number from participantAlt field');
+        return phoneNumber;
+      }
+    }
+
+    // 3. Check for participant field (in group messages, standard field)
+    const participant = baileysMessage.key.participant;
+    if (participant && !participant.includes('@lid')) {
+      const phoneNumber = participant.replace(/@.*$/, '');
+      if (phoneNumber && phoneNumber.length > 5) {
+        appLogger.info({
+          lid: remoteJid.replace(/@.*$/, ''),
+          phoneNumber,
+          source: 'participant'
+        }, '✅ Extracted phone number from participant field');
+        return phoneNumber;
+      }
+    }
+
+    // 4. Log available fields for debugging - this will help identify other fields we can use
+    appLogger.warn({
+      lid: remoteJid.replace(/@.*$/, ''),
+      pushName: messageObj.pushName,
+      remoteJidAlt: key.remoteJidAlt,
+      participantAlt: key.participantAlt,
+      participant: key.participant,
+      availableFields: Object.keys(baileysMessage).filter(k => k !== 'message' && k !== 'key'),
+      keyFields: Object.keys(baileysMessage.key)
+    }, '⚠️  Could not extract phone number from LID, using LID as fallback');
+
+    // Fall back to LID if we can't extract phone number
+    return remoteJid.replace(/@.*$/, '');
+  }
+
+  // Standard format: just strip the @s.whatsapp.net suffix
+  return remoteJid.replace(/@.*$/, '');
+}
 
 /**
  * Converts a Baileys WAMessage to our unified WhatsAppMessage format
@@ -22,12 +106,13 @@ export function convertBaileysToWhatsAppMessage(baileysMessage: WAMessage): What
 
     const whatsappMessage: WhatsAppMessage = {
       id: baileysMessage.key.id || '',
-      from: (baileysMessage.key.remoteJid || '').replace(/@.*$/, ''),
+      from: extractPhoneNumber(baileysMessage),
       timestamp: (baileysMessage.messageTimestamp as number || Date.now()).toString(),
       type: mapBaileysTypeToWhatsAppType(messageType),
       baileys: {
         rawMessage: baileysMessage,
-        messageTimestamp: baileysMessage.messageTimestamp as number
+        messageTimestamp: baileysMessage.messageTimestamp as number,
+        remoteJid: baileysMessage.key.remoteJid // Store original JID for replies
       }
     };
 

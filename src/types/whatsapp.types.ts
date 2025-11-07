@@ -35,7 +35,7 @@ export interface WhatsAppContact {
 
 export interface WhatsAppMessage {
   id: string;
-  from: string;
+  from: string; // Phone number (extracted from LID if necessary)
   timestamp: string;
   type: WhatsAppMessageType;
   text?: WhatsAppTextMessage;
@@ -50,6 +50,7 @@ export interface WhatsAppMessage {
   baileys?: {
     rawMessage?: any;
     messageTimestamp?: number;
+    remoteJid?: string; // Original JID for sending replies (may be @lid format)
   };
 }
 
