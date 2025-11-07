@@ -22,7 +22,7 @@ export function convertBaileysToWhatsAppMessage(baileysMessage: WAMessage): What
 
     const whatsappMessage: WhatsAppMessage = {
       id: baileysMessage.key.id || '',
-      from: (baileysMessage.key.remoteJid || '').replace('@s.whatsapp.net', ''),
+      from: (baileysMessage.key.remoteJid || '').replace(/@.*$/, ''),
       timestamp: (baileysMessage.messageTimestamp as number || Date.now()).toString(),
       type: mapBaileysTypeToWhatsAppType(messageType),
       baileys: {
