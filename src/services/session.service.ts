@@ -4,7 +4,10 @@ import { appLogger } from "../utils/logger";
 import { withServiceResponse } from "../utils/retry";
 import { isValidWhatsAppId } from "../utils/validation";
 
-// Active choice sessions stored in memory
+// Prisma client reference for database operations
+let prismaClient: PrismaClient | null = null;
+
+// Active choice sessions stored in memory (cache backed by database)
 const activeChoiceSessions = new Map<string, {
   sessionId: string;
   choices: Array<{ id: string; content: string }>;
@@ -12,23 +15,99 @@ const activeChoiceSessions = new Map<string, {
   currentTypebotSlug?: string; // Track active typebot slug (for API calls)
 }>();
 
-// Expected input types stored in memory (for audio upload vs transcription decision)
+// Expected input types stored in memory (cache backed by database)
 const expectedInputTypes = new Map<string, {
   inputType: string;
   timestamp: Date;
 }>();
 
+// Session TTL in milliseconds (30 minutes)
+const SESSION_TTL_MS = 30 * 60 * 1000;
+
 /**
- * Initialize session management with automatic cleanup
+ * Load persisted session state from database on startup
  */
-export function initializeSessionManagement(): void {
+async function loadPersistedState(prisma: PrismaClient): Promise<void> {
+  try {
+    const now = new Date();
+
+    // Load active choices that haven't expired
+    const activeChoices = await prisma.activeChoice.findMany({
+      where: { expiresAt: { gt: now } }
+    });
+
+    for (const choice of activeChoices) {
+      activeChoiceSessions.set(choice.waId, {
+        sessionId: choice.sessionId,
+        choices: JSON.parse(choice.choices),
+        timestamp: choice.createdAt,
+        currentTypebotSlug: choice.typebotSlug || undefined
+      });
+    }
+
+    // Load expected input types that haven't expired
+    const inputTypes = await prisma.expectedInputType.findMany({
+      where: { expiresAt: { gt: now } }
+    });
+
+    for (const input of inputTypes) {
+      expectedInputTypes.set(input.waId, {
+        inputType: input.inputType,
+        timestamp: input.createdAt
+      });
+    }
+
+    appLogger.info({
+      activeChoices: activeChoices.length,
+      inputTypes: inputTypes.length
+    }, 'Loaded persisted session state from database');
+  } catch (error) {
+    appLogger.error({ error }, 'Failed to load persisted session state');
+  }
+}
+
+/**
+ * Clean up expired records from database
+ */
+async function cleanupExpiredDbRecords(prisma: PrismaClient): Promise<void> {
+  try {
+    const now = new Date();
+
+    const deletedChoices = await prisma.activeChoice.deleteMany({
+      where: { expiresAt: { lt: now } }
+    });
+
+    const deletedInputTypes = await prisma.expectedInputType.deleteMany({
+      where: { expiresAt: { lt: now } }
+    });
+
+    if (deletedChoices.count > 0 || deletedInputTypes.count > 0) {
+      appLogger.debug({
+        deletedChoices: deletedChoices.count,
+        deletedInputTypes: deletedInputTypes.count
+      }, 'Cleaned up expired database records');
+    }
+  } catch (error) {
+    appLogger.error({ error }, 'Failed to cleanup expired database records');
+  }
+}
+
+/**
+ * Initialize session management with automatic cleanup and database persistence
+ */
+export async function initializeSessionManagement(prisma: PrismaClient): Promise<void> {
+  prismaClient = prisma;
+
+  // Load persisted state from database
+  await loadPersistedState(prisma);
+
   // Clean up old choice sessions every 5 minutes
-  setInterval(() => {
+  setInterval(async () => {
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
     let cleanedChoices = 0;
     let cleanedInputTypes = 0;
 
-    // Clean up expired choice sessions
+    // Clean up expired choice sessions from memory
     for (const [waId, session] of activeChoiceSessions.entries()) {
       if (session.timestamp < fiveMinutesAgo) {
         activeChoiceSessions.delete(waId);
@@ -36,13 +115,16 @@ export function initializeSessionManagement(): void {
       }
     }
 
-    // Clean up expired expected input types
+    // Clean up expired expected input types from memory
     for (const [waId, inputType] of expectedInputTypes.entries()) {
       if (inputType.timestamp < fiveMinutesAgo) {
         expectedInputTypes.delete(waId);
         cleanedInputTypes++;
       }
     }
+
+    // Also clean up expired records from database
+    await cleanupExpiredDbRecords(prisma);
 
     if (cleanedChoices > 0 || cleanedInputTypes > 0) {
       appLogger.debug({ cleanedChoices, cleanedInputTypes }, 'Cleaned up expired sessions');
@@ -164,23 +246,52 @@ export async function getUserMessages(
 }
 
 /**
- * Sets active choices for audio matching
+ * Sets active choices for audio matching (persisted to database)
  */
-export function setActiveChoices(
-  waId: string, 
-  sessionId: string, 
+export async function setActiveChoices(
+  waId: string,
+  sessionId: string,
   choices: Array<{ id: string; content: string }>,
   typebotId?: string
-): void {
+): Promise<void> {
   const existing = activeChoiceSessions.get(waId);
-  activeChoiceSessions.set(waId, {
+  const now = new Date();
+  const data = {
     sessionId,
     choices,
-    timestamp: new Date(),
+    timestamp: now,
     currentTypebotSlug: typebotId || existing?.currentTypebotSlug
-  });
+  };
 
-  appLogger.debug({ waId, sessionId, choicesCount: choices.length }, 
+  // Update in-memory cache
+  activeChoiceSessions.set(waId, data);
+
+  // Persist to database
+  if (prismaClient) {
+    const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+    try {
+      await prismaClient.activeChoice.upsert({
+        where: { waId },
+        update: {
+          sessionId,
+          choices: JSON.stringify(choices),
+          typebotSlug: data.currentTypebotSlug,
+          expiresAt
+        },
+        create: {
+          waId,
+          sessionId,
+          choices: JSON.stringify(choices),
+          typebotSlug: data.currentTypebotSlug,
+          expiresAt
+        }
+      });
+    } catch (error) {
+      appLogger.error({ waId, error }, 'Failed to persist active choices to database');
+    }
+  }
+
+  appLogger.debug({ waId, sessionId, choicesCount: choices.length },
     'Active choices set for user');
 }
 
@@ -233,28 +344,67 @@ export async function getActiveSessionId(prisma: PrismaClient, waId: string): Pr
 }
 
 /**
- * Clears active choices for a user
+ * Clears active choices for a user (removes from database)
  */
-export function clearActiveChoices(waId: string): void {
+export async function clearActiveChoices(waId: string): Promise<void> {
   const session = activeChoiceSessions.get(waId);
+
+  // Clear from memory
+  activeChoiceSessions.delete(waId);
+
+  // Clear from database
+  if (prismaClient) {
+    try {
+      await prismaClient.activeChoice.delete({
+        where: { waId }
+      }).catch(() => {
+        // Ignore if not found
+      });
+    } catch (error) {
+      // Ignore errors (record may not exist)
+    }
+  }
+
   if (session) {
-    activeChoiceSessions.delete(waId);
     appLogger.debug({ waId, sessionId: session.sessionId },
       'Active choices cleared');
   }
 }
 
 /**
- * Sets expected input type for audio handling decision
+ * Sets expected input type for audio handling decision (persisted to database)
  */
-export function setExpectedInputType(waId: string, inputType: string): void {
+export async function setExpectedInputType(waId: string, inputType: string): Promise<void> {
+  const now = new Date();
+
+  // Update in-memory cache
   expectedInputTypes.set(waId, {
     inputType,
-    timestamp: new Date()
+    timestamp: now
   });
 
-  appLogger.info({ waId, inputType },
-    '💾 Expected input type set for user');
+  // Persist to database
+  if (prismaClient) {
+    const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+    try {
+      await prismaClient.expectedInputType.upsert({
+        where: { waId },
+        update: {
+          inputType,
+          expiresAt
+        },
+        create: {
+          waId,
+          inputType,
+          expiresAt
+        }
+      });
+    } catch (error) {
+      appLogger.error({ waId, error }, 'Failed to persist expected input type to database');
+    }
+  }
+
+  appLogger.debug({ waId, inputType }, 'Expected input type set for user');
 }
 
 /**
@@ -264,8 +414,7 @@ export function getExpectedInputType(waId: string): string | null {
   const entry = expectedInputTypes.get(waId);
 
   if (!entry) {
-    appLogger.info({ waId },
-      '🔍 No expected input type found for user');
+    appLogger.debug({ waId }, 'No expected input type found for user');
     return null;
   }
 
@@ -273,23 +422,39 @@ export function getExpectedInputType(waId: string): string | null {
   const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
   if (entry.timestamp < thirtyMinutesAgo) {
     expectedInputTypes.delete(waId);
-    appLogger.info({ waId, inputType: entry.inputType },
-      '⏰ Expected input type expired and removed');
+    appLogger.debug({ waId, inputType: entry.inputType },
+      'Expected input type expired and removed');
     return null;
   }
 
-  appLogger.info({ waId, inputType: entry.inputType },
-    '✅ Retrieved expected input type for user');
+  appLogger.debug({ waId, inputType: entry.inputType },
+    'Retrieved expected input type for user');
   return entry.inputType;
 }
 
 /**
- * Clears expected input type for a user
+ * Clears expected input type for a user (removes from database)
  */
-export function clearExpectedInputType(waId: string): void {
+export async function clearExpectedInputType(waId: string): Promise<void> {
   const entry = expectedInputTypes.get(waId);
+
+  // Clear from memory
+  expectedInputTypes.delete(waId);
+
+  // Clear from database
+  if (prismaClient) {
+    try {
+      await prismaClient.expectedInputType.delete({
+        where: { waId }
+      }).catch(() => {
+        // Ignore if not found
+      });
+    } catch (error) {
+      // Ignore errors (record may not exist)
+    }
+  }
+
   if (entry) {
-    expectedInputTypes.delete(waId);
     appLogger.debug({ waId, inputType: entry.inputType },
       'Expected input type cleared');
   }

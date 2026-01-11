@@ -8,6 +8,7 @@ import { ProcessedMessage, MessageContentType } from "../types/common.types";
 import { config } from "../config/config";
 import { appLogger } from "../utils/logger";
 import { sanitizeText, isValidWhatsAppId } from "../utils/validation";
+import { withUserLock } from "../utils/user-lock";
 import { processMessage, getActiveSessionsCountForProcessing } from "../services/message-processing.service";
 import { getActiveSessionId } from "../services/session.service";
 import { convertBaileysToWhatsAppMessage, convertToProcessedMessage, extractTextFromInteractive } from "../utils/message-converter";
@@ -86,15 +87,16 @@ export async function handleWebhook(prisma: PrismaClient, req: Request, res: Res
         contactName: contact?.profile.name
       });
 
-      // Process message asynchronously
-      processMessage(prisma, processedMessage)
-        .catch(error => {
-          appLogger.error(
-            { waId: processedMessage.waId, messageId: processedMessage.id },
-            'Error processing message',
-            error
-          );
-        });
+      // Process message with per-user lock to prevent race conditions
+      withUserLock(processedMessage.waId, async () => {
+        await processMessage(prisma, processedMessage);
+      }).catch(error => {
+        appLogger.error(
+          { waId: processedMessage.waId, messageId: processedMessage.id },
+          'Error processing message',
+          error
+        );
+      });
     }
 
     const duration = Date.now() - startTime;
@@ -157,15 +159,16 @@ export async function handleBaileysMessage(prisma: PrismaClient, baileysMessage:
         source: 'baileys'
       });
 
-      // Process message asynchronously
-      processMessage(prisma, processedMessage)
-        .catch(error => {
-          appLogger.error(
-            { waId: processedMessage.waId, messageId: processedMessage.id },
-            'Error processing Baileys message',
-            error
-          );
-        });
+      // Process message with per-user lock to prevent race conditions
+      withUserLock(processedMessage.waId, async () => {
+        await processMessage(prisma, processedMessage);
+      }).catch(error => {
+        appLogger.error(
+          { waId: processedMessage.waId, messageId: processedMessage.id },
+          'Error processing Baileys message',
+          error
+        );
+      });
     }
 
     const duration = Date.now() - startTime;
@@ -313,14 +316,37 @@ function getMessageContentType(message: WhatsAppMessage): MessageContentType {
 
 /**
  * Health check endpoint
+ * Returns 200 if healthy, 503 if degraded (WhatsApp not connected)
  */
 export async function healthCheck(req: Request, res: Response): Promise<void> {
   const activeSessionsCount = getActiveSessionsCountForProcessing();
-  
-  res.json({
-    status: 'healthy',
+  const socket = getBaileysSocket();
+  const isWhatsAppConnected = config.whatsapp.mode === 'baileys' ? !!socket : true;
+
+  const health = {
+    status: isWhatsAppConnected ? 'healthy' : 'degraded',
     timestamp: new Date().toISOString(),
-    activeSessions: activeSessionsCount,
-    uptime: process.uptime()
-  });
+    components: {
+      whatsapp: {
+        status: isWhatsAppConnected ? 'up' : 'down',
+        mode: config.whatsapp.mode
+      },
+      database: {
+        status: 'up' // If we get here, database is working
+      }
+    },
+    metrics: {
+      activeSessions: activeSessionsCount,
+      uptime: process.uptime(),
+      memory: {
+        heapUsed: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+        heapTotal: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
+        unit: 'MB'
+      }
+    }
+  };
+
+  // Return 503 if WhatsApp is not connected (signals to load balancers not to route traffic)
+  const statusCode = isWhatsAppConnected ? 200 : 503;
+  res.status(statusCode).json(health);
 }

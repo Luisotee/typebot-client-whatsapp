@@ -86,14 +86,14 @@ export async function uploadFileToS3(
     fileSize: fileBuffer.length,
   };
 
-  appLogger.info(
+  appLogger.debug(
     {
       ...context,
       mimeType,
-      presignedUrl,
-      formData: formData, // Log complete form data
+      // Don't log presignedUrl or formData - they contain sensitive credentials
+      formDataKeys: Object.keys(formData),
     },
-    "Uploading file to S3 - Full form data"
+    "Uploading file to S3"
   );
 
   return withServiceResponse(async () => {
@@ -104,7 +104,6 @@ export async function uploadFileToS3(
 
         // Append all form data fields first (in the order they were provided)
         Object.entries(formData).forEach(([key, value]) => {
-          appLogger.debug({ key, value }, "Appending form field");
           form.append(key, value);
         });
 

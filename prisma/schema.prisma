@@ -42,3 +42,27 @@ model WhitelistedUser {
 
   @@index([waId])
 }
+
+// Persisted active choices for audio matching (survives server restart)
+model ActiveChoice {
+  id          Int      @id @default(autoincrement())
+  waId        String   @unique
+  sessionId   String
+  choices     String   // JSON stringified array of {id, content}
+  typebotSlug String?
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
+// Persisted expected input types for audio handling (survives server restart)
+model ExpectedInputType {
+  id        Int      @id @default(autoincrement())
+  waId      String   @unique
+  inputType String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+}

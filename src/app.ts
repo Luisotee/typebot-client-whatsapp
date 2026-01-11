@@ -44,11 +44,12 @@ export function createApp(): express.Application {
     });
   }
 
-  // Initialize session management
-  initializeSessionManagement();
+  // Initialize services asynchronously
+  const initializeServices = async () => {
+    // Initialize session management with database persistence
+    await initializeSessionManagement(prisma);
 
-  // Initialize WhatsApp service (Baileys or Meta API)
-  const initWhatsApp = async () => {
+    // Initialize WhatsApp service (Baileys or Meta API)
     try {
       await initializeWhatsAppService();
       appLogger.info({ mode: getWhatsAppMode() }, 'WhatsApp service initialized successfully');
@@ -63,8 +64,8 @@ export function createApp(): express.Application {
     }
   };
 
-  // Initialize WhatsApp service asynchronously
-  initWhatsApp();
+  // Initialize services asynchronously
+  initializeServices();
 
   // Middleware
   app.use(express.json({ limit: '10mb' }));

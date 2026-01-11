@@ -22,6 +22,12 @@ let sock: WASocket | null = null;
 // Simple in-memory message cache for getMessage functionality
 const messageCache = new Map<string, proto.IWebMessageInfo>();
 
+// Reconnection backoff state
+let reconnectAttempts = 0;
+const MAX_RECONNECT_DELAY_MS = 60000; // 1 minute max
+const BASE_RECONNECT_DELAY_MS = 1000; // 1 second base
+const MAX_MESSAGE_CACHE_SIZE = 1000;
+
 // Create a minimal logger for Baileys that only logs fatal errors
 const baileysLogger = pino({
   level: 'fatal', // Only log fatal errors, suppress everything else
@@ -35,7 +41,7 @@ export async function initializeBaileySocket(): Promise<void> {
 
   // Fetch the latest WhatsApp Web version to avoid 405 errors
   const { version, isLatest } = await fetchLatestBaileysVersion();
-  console.log(`Using WhatsApp version ${version.join('.')}, isLatest: ${isLatest}`);
+  appLogger.info({ version: version.join('.'), isLatest }, 'Using WhatsApp Web version');
 
   sock = makeWASocket({
     auth: state,
@@ -58,6 +64,8 @@ export async function initializeBaileySocket(): Promise<void> {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
+      appLogger.info({}, 'QR code generated - scan with WhatsApp to connect');
+      // Still use console for QR display since it needs terminal formatting
       console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       console.log('📱 Scan this QR code with WhatsApp to connect:');
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
@@ -66,16 +74,29 @@ export async function initializeBaileySocket(): Promise<void> {
     }
 
     if (connection === 'close') {
-      const shouldReconnect = (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-      console.log('connection closed due to', lastDisconnect?.error, ', reconnecting', shouldReconnect);
+      const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
-      // reconnect if not logged out
       if (shouldReconnect) {
-        // Add a small delay before reconnecting to avoid rate limiting
-        setTimeout(() => initializeBaileySocket(), 3000);
+        reconnectAttempts++;
+        // Exponential backoff with jitter
+        const delay = Math.min(
+          BASE_RECONNECT_DELAY_MS * Math.pow(2, reconnectAttempts - 1) + Math.random() * 1000,
+          MAX_RECONNECT_DELAY_MS
+        );
+        appLogger.warn({
+          attempt: reconnectAttempts,
+          delayMs: Math.round(delay),
+          statusCode,
+          error: lastDisconnect?.error?.message
+        }, 'Connection closed, reconnecting with backoff');
+        setTimeout(() => initializeBaileySocket(), delay);
+      } else {
+        appLogger.error({ statusCode }, 'WhatsApp logged out - manual re-authentication required');
       }
     } else if (connection === 'open') {
-      console.log('opened connection');
+      reconnectAttempts = 0; // Reset on successful connection
+      appLogger.info({}, 'WhatsApp connection established successfully');
     }
   });
 
@@ -85,19 +106,48 @@ export async function initializeBaileySocket(): Promise<void> {
   // Handle messages (this will be used by webhook controller)
   sock.ev.on('messages.upsert', ({ messages }) => {
     for (const message of messages) {
-      // Cache message for getMessage functionality
-      const msgKey = `${message.key.remoteJid}_${message.key.id}`;
-      messageCache.set(msgKey, message);
+      try {
+        // Cache message for getMessage functionality
+        const msgKey = `${message.key.remoteJid}_${message.key.id}`;
+        messageCache.set(msgKey, message);
 
-      if (!message.key.fromMe) {
-        appLogger.info({
+        // Prune cache if too large to prevent memory leak
+        if (messageCache.size > MAX_MESSAGE_CACHE_SIZE) {
+          const keysToDelete = Array.from(messageCache.keys()).slice(0, 100);
+          keysToDelete.forEach(k => messageCache.delete(k));
+          appLogger.debug({ pruned: keysToDelete.length }, 'Pruned message cache');
+        }
+
+        if (!message.key.fromMe) {
+          appLogger.debug({
+            messageId: message.key.id,
+            from: message.key.remoteJid,
+            type: getContentType(message.message)
+          }, 'Received message via Baileys');
+        }
+      } catch (error) {
+        appLogger.error({
           messageId: message.key.id,
-          from: message.key.remoteJid,
-          type: getContentType(message.message)
-        }, 'Received message via Baileys');
+          error: error instanceof Error ? error.message : String(error)
+        }, 'Error processing message in upsert handler');
       }
     }
   });
+}
+
+/**
+ * Closes the socket connection gracefully
+ */
+export function closeSocket(): void {
+  if (sock) {
+    try {
+      sock.end(undefined);
+      appLogger.info({}, 'Baileys socket closed');
+    } catch (error) {
+      appLogger.error({ error }, 'Error closing Baileys socket');
+    }
+    sock = null;
+  }
 }
 
 /**
